@@ -26,11 +26,11 @@ func NewBundle() Bundle {
 
 type DiscoveryAdapter struct{}
 
-func (DiscoveryAdapter) StartChromecastDiscoveryLoop(ctx context.Context) {
-	devices.StartChromecastDiscoveryLoop(ctx)
+func (DiscoveryAdapter) StartDiscovery(ctx context.Context) {
+	devices.StartDiscovery(ctx)
 }
 
-func (DiscoveryAdapter) LoadAllDevices(delaySeconds int) ([]devices.Device, error) {
+func (DiscoveryAdapter) LoadAllDevices() ([]devices.Device, error) {
 	return devices.LoadAllDevices()
 }
 
@@ -59,6 +59,14 @@ func (c *CastClientAdapter) Load(mediaURL, contentType, title string, startTime 
 
 func (c *CastClientAdapter) LoadOnExisting(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
 	return c.client.LoadOnExisting(mediaURL, contentType, title, startTime, duration, subtitleURL, live)
+}
+
+func (c *CastClientAdapter) Play() error {
+	return c.client.Play()
+}
+
+func (c *CastClientAdapter) Pause() error {
+	return c.client.Pause()
 }
 
 func (c *CastClientAdapter) Seek(seconds int) error {

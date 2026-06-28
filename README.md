@@ -11,10 +11,12 @@
 
 `mcp-beam` is a MCP server (`stdio` transport) for casting local files and media URLs to Chromecast and DLNA/UPnP devices on your LAN.
 
-It exposes five tools:
+It exposes seven tools:
 - `list_local_hardware`
 - `beam_media`
 - `get_beaming_status`
+- `play_beaming`
+- `pause_beaming`
 - `seek_beaming`
 - `stop_beaming`
 
@@ -92,7 +94,7 @@ go run go2tv.app/mcp-beam@latest --self-test
 
 1. Call `list_local_hardware` and pick a device `id`.
 2. Call `beam_media` with `source` and `target_device`.
-3. Call `get_beaming_status` or `seek_beaming` as needed.
+3. Call `get_beaming_status`, `play_beaming`, `pause_beaming`, or `seek_beaming` as needed.
 4. Call `stop_beaming` when done.
 
 Minimal example flow:
@@ -121,6 +123,24 @@ Minimal example flow:
 ```json
 {
   "name": "get_beaming_status",
+  "arguments": {
+    "session_id": "sess_abcd1234"
+  }
+}
+```
+
+```json
+{
+  "name": "pause_beaming",
+  "arguments": {
+    "session_id": "sess_abcd1234"
+  }
+}
+```
+
+```json
+{
+  "name": "play_beaming",
   "arguments": {
     "session_id": "sess_abcd1234"
   }
@@ -410,6 +430,58 @@ On success, `structuredContent` includes:
 - `transcoding`
 - `warnings[]`
 
+### `play_beaming`
+
+Resume an active beam session.
+
+Arguments:
+- `target_device` (optional string)
+- `session_id` (optional string)
+- At least one of `target_device` or `session_id` is required.
+
+Example:
+
+```json
+{
+  "name": "play_beaming",
+  "arguments": {
+    "session_id": "sess_abcd1234"
+  }
+}
+```
+
+On success, `structuredContent` includes:
+- `ok`
+- `session_id`
+- `device_id`
+- `state` (`playing`)
+
+### `pause_beaming`
+
+Pause an active beam session.
+
+Arguments:
+- `target_device` (optional string)
+- `session_id` (optional string)
+- At least one of `target_device` or `session_id` is required.
+
+Example:
+
+```json
+{
+  "name": "pause_beaming",
+  "arguments": {
+    "session_id": "sess_abcd1234"
+  }
+}
+```
+
+On success, `structuredContent` includes:
+- `ok`
+- `session_id`
+- `device_id`
+- `state` (`paused`)
+
 ### `stop_beaming`
 
 Stop an active beam session.
@@ -590,8 +662,9 @@ Core flow:
 1. `list_local_hardware`: discover, normalize, stable IDs, optional reachability filter.
 2. `beam_media`: validate source, resolve target, choose protocol, decide transcode, start playback, persist session.
 3. `get_beaming_status`: query active sessions by `session_id` or `target_device`.
-4. `seek_beaming`: seek active sessions by `session_id` or `target_device`.
-5. `stop_beaming`: resolve session/device, stop protocol playback, tear down runtime resources.
+4. `play_beaming` / `pause_beaming`: resume or pause active sessions by `session_id` or `target_device`.
+5. `seek_beaming`: seek active sessions by `session_id` or `target_device`.
+6. `stop_beaming`: resolve session/device, stop protocol playback, tear down runtime resources.
 
 Session lifecycle defaults:
 - `idle_cleanup_after = 10m`

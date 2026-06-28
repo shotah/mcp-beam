@@ -33,6 +33,8 @@ type LocalHardwareLister interface {
 type BeamController interface {
 	BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error)
 	StopBeaming(ctx context.Context, req domain.StopRequest) (*domain.StopResult, error)
+	PlayBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error)
+	PauseBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error)
 	SeekBeaming(ctx context.Context, req domain.SeekRequest) (*domain.SeekResult, error)
 	GetBeamingStatus(ctx context.Context, req domain.StatusRequest) (*domain.StatusResult, error)
 }
@@ -207,6 +209,10 @@ func (s *Server) handleToolCall(ctx context.Context, id json.RawMessage, rawPara
 		return s.handleBeamMediaCall(ctx, id, params.Arguments)
 	case "stop_beaming":
 		return s.handleStopBeamingCall(ctx, id, params.Arguments)
+	case "play_beaming":
+		return s.handlePlaybackControlCall(ctx, id, params.Arguments, "play_beaming")
+	case "pause_beaming":
+		return s.handlePlaybackControlCall(ctx, id, params.Arguments, "pause_beaming")
 	case "seek_beaming":
 		return s.handleSeekBeamingCall(ctx, id, params.Arguments)
 	case "get_beaming_status":
@@ -393,6 +399,76 @@ func (s *Server) handleStopBeamingCall(ctx context.Context, id json.RawMessage, 
 				{
 					Type: "text",
 					Text: fmt.Sprintf("Stopped beaming session %s.", result.StoppedSessionID),
+				},
+			},
+			StructuredContent: result,
+		},
+	})
+}
+
+func (s *Server) handlePlaybackControlCall(ctx context.Context, id json.RawMessage, rawArgs json.RawMessage, toolName string) error {
+	startedAt := time.Now()
+
+	if s.beamController == nil {
+		return s.sendToolInternalError(toolName, "", "", startedAt, id, "beam controller is not configured")
+	}
+
+	var args struct {
+		TargetDevice *string `json:"target_device,omitempty"`
+		SessionID    *string `json:"session_id,omitempty"`
+	}
+	if err := decodeStrict(rawArgs, &args); err != nil {
+		return s.sendInvalidParams(toolName, "", "", startedAt, id)
+	}
+
+	targetDevice := ""
+	sessionID := ""
+	if args.TargetDevice != nil {
+		targetDevice = strings.TrimSpace(*args.TargetDevice)
+	}
+	if args.SessionID != nil {
+		sessionID = strings.TrimSpace(*args.SessionID)
+	}
+	if targetDevice == "" && sessionID == "" {
+		return s.sendInvalidParams(toolName, targetDevice, sessionID, startedAt, id)
+	}
+
+	req := domain.PlaybackControlRequest{
+		TargetDevice: targetDevice,
+		SessionID:    sessionID,
+	}
+	var result *domain.PlaybackControlResult
+	var err error
+	switch toolName {
+	case "play_beaming":
+		result, err = s.beamController.PlayBeaming(ctx, req)
+	case "pause_beaming":
+		result, err = s.beamController.PauseBeaming(ctx, req)
+	default:
+		return s.sendToolInternalError(toolName, targetDevice, sessionID, startedAt, id, "unknown playback control tool")
+	}
+	if err != nil {
+		s.logCall(toolName, targetDevice, sessionID, startedAt, toolErrorCode(err))
+		return s.send(response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result:  toolErrorResultFromError(err),
+		})
+	}
+	s.logCall(toolName, result.DeviceID, result.SessionID, startedAt, "")
+
+	verb := "Resumed"
+	if toolName == "pause_beaming" {
+		verb = "Paused"
+	}
+	return s.send(response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: toolCallResult{
+			Content: []toolContent{
+				{
+					Type: "text",
+					Text: fmt.Sprintf("%s beaming session %s.", verb, result.SessionID),
 				},
 			},
 			StructuredContent: result,
@@ -884,6 +960,22 @@ func staticTools() []tool {
 			},
 		},
 		{
+			Name:        "play_beaming",
+			Description: "Resume active playback on a selected device or session.",
+			InputSchema: playbackControlInputSchema(
+				"The device ID or exact name of the device to resume playback on.",
+				"The unique session ID to resume. This is returned by a successful 'beam_media' call.",
+			),
+		},
+		{
+			Name:        "pause_beaming",
+			Description: "Pause active playback on a selected device or session.",
+			InputSchema: playbackControlInputSchema(
+				"The device ID or exact name of the device to pause playback on.",
+				"The unique session ID to pause. This is returned by a successful 'beam_media' call.",
+			),
+		},
+		{
 			Name:        "seek_beaming",
 			Description: "Seek active playback by absolute seconds, percentage, from-end offset, or relative delta on a selected device or session. Provide exactly one seek mode field.",
 			InputSchema: map[string]any{
@@ -940,5 +1032,23 @@ func staticTools() []tool {
 				"additionalProperties": false,
 			},
 		},
+	}
+}
+
+func playbackControlInputSchema(targetDescription, sessionDescription string) map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"target_device": map[string]any{
+				"type":        "string",
+				"description": targetDescription,
+			},
+			"session_id": map[string]any{
+				"type":        "string",
+				"description": sessionDescription,
+			},
+		},
+		"minProperties":        1,
+		"additionalProperties": false,
 	}
 }

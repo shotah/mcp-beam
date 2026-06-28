@@ -104,6 +104,8 @@ type fakeCastClient struct {
 	loadDelay           time.Duration
 	loadBlock           <-chan struct{}
 	seekErr             error
+	playErr             error
+	pauseErr            error
 	stopErr             error
 	closeErr            error
 	statusErr           error
@@ -118,6 +120,8 @@ type fakeCastClient struct {
 	connectCalls        int
 	loadCalls           int
 	loadOnExistingCalls int
+	playCalls           int
+	pauseCalls          int
 	seekCalls           int
 	stopCalls           int
 	closeCalls          int
@@ -188,6 +192,16 @@ func (f *fakeCastClient) LoadOnExisting(mediaURL, contentType, title string, sta
 func (f *fakeCastClient) Stop() error {
 	f.stopCalls++
 	return f.stopErr
+}
+
+func (f *fakeCastClient) Play() error {
+	f.playCalls++
+	return f.playErr
+}
+
+func (f *fakeCastClient) Pause() error {
+	f.pauseCalls++
+	return f.pauseErr
 }
 
 func (f *fakeCastClient) Seek(seconds int) error {
@@ -767,6 +781,117 @@ func TestBeamMediaDLNAStartSecondsTranscodingSetsFFmpegSeek(t *testing.T) {
 	}
 	if dlnaPayload.seekRelTime != "" {
 		t.Fatalf("expected no direct seek for transcoded start, got %q", dlnaPayload.seekRelTime)
+	}
+}
+
+func TestPlayPauseBeamingChromecastBySessionID(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+
+	castClient := &fakeCastClient{}
+	sess := &session{
+		ID:         "sess_control_cast",
+		DeviceID:   "dev_cast",
+		DeviceName: "Living Room",
+		Protocol:   "chromecast",
+		castClient: castClient,
+	}
+	manager.initializeSessionLifecycle(sess, "paused", "10")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	playResult, err := manager.PlayBeaming(context.Background(), domain.PlaybackControlRequest{
+		SessionID: "sess_control_cast",
+	})
+	if err != nil {
+		t.Fatalf("play beaming: %v", err)
+	}
+	if !playResult.OK || playResult.State != "playing" {
+		t.Fatalf("unexpected play result: %#v", playResult)
+	}
+	if playResult.SessionID != "sess_control_cast" || playResult.DeviceID != "dev_cast" {
+		t.Fatalf("unexpected play target: %#v", playResult)
+	}
+	if castClient.playCalls != 1 {
+		t.Fatalf("expected one play call, got %d", castClient.playCalls)
+	}
+
+	pauseResult, err := manager.PauseBeaming(context.Background(), domain.PlaybackControlRequest{
+		SessionID: "sess_control_cast",
+	})
+	if err != nil {
+		t.Fatalf("pause beaming: %v", err)
+	}
+	if !pauseResult.OK || pauseResult.State != "paused" {
+		t.Fatalf("unexpected pause result: %#v", pauseResult)
+	}
+	if pauseResult.SessionID != "sess_control_cast" || pauseResult.DeviceID != "dev_cast" {
+		t.Fatalf("unexpected pause target: %#v", pauseResult)
+	}
+	if castClient.pauseCalls != 1 {
+		t.Fatalf("expected one pause call, got %d", castClient.pauseCalls)
+	}
+}
+
+func TestPlayPauseBeamingDLNAByTargetDevice(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+
+	dlnaPayload := &fakeDLNAPayload{listenAddr: "127.0.0.1:3511"}
+	sess := &session{
+		ID:          "sess_control_dlna",
+		DeviceID:    "dev_dlna",
+		DeviceName:  "Bedroom TV",
+		Protocol:    "dlna",
+		dlnaPayload: dlnaPayload,
+	}
+	manager.initializeSessionLifecycle(sess, "playing", "00:00:10")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	pauseResult, err := manager.PauseBeaming(context.Background(), domain.PlaybackControlRequest{TargetDevice: "Bedroom TV"})
+	if err != nil {
+		t.Fatalf("pause beaming: %v", err)
+	}
+	if pauseResult.State != "paused" {
+		t.Fatalf("expected paused state, got %s", pauseResult.State)
+	}
+	if dlnaPayload.actionCount("Pause") != 1 {
+		t.Fatalf("expected Pause action once, got %d", dlnaPayload.actionCount("Pause"))
+	}
+
+	playResult, err := manager.PlayBeaming(context.Background(), domain.PlaybackControlRequest{TargetDevice: "Bedroom TV"})
+	if err != nil {
+		t.Fatalf("play beaming: %v", err)
+	}
+	if playResult.State != "playing" {
+		t.Fatalf("expected playing state, got %s", playResult.State)
+	}
+	if dlnaPayload.actionCount("Play") != 1 {
+		t.Fatalf("expected Play action once, got %d", dlnaPayload.actionCount("Play"))
+	}
+	if dlnaPayload.actionCount("Play1") != 0 {
+		t.Fatalf("expected Play1 not to be used for resume, got %d", dlnaPayload.actionCount("Play1"))
+	}
+}
+
+func TestPauseBeamingRequiresTarget(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+
+	_, err := manager.PauseBeaming(context.Background(), domain.PlaybackControlRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	toolErr, ok := err.(*domain.ToolError)
+	if !ok {
+		t.Fatalf("expected ToolError, got %T", err)
+	}
+	if toolErr.Code != "INTERNAL_ERROR" {
+		t.Fatalf("expected INTERNAL_ERROR, got %s", toolErr.Code)
 	}
 }
 
@@ -2551,6 +2676,53 @@ func TestCleanupSweepKeepsPlayingSessionWithProgress(t *testing.T) {
 			t.Fatal("expected playing session with progress to stay active")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPlayBeamingRefreshesProgressTimeForCleanup(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+	manager.idleCleanupAfter = time.Minute
+	manager.pausedCleanupAfter = time.Hour
+	manager.maxSessionAge = time.Hour
+
+	base := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	now := base
+	manager.now = func() time.Time {
+		return now
+	}
+
+	client := &fakeCastClient{}
+	sess := &session{
+		ID:         "sess_resume_cleanup",
+		DeviceID:   "dev_resume_cleanup",
+		DeviceName: "Resume TV",
+		Protocol:   "chromecast",
+		castClient: client,
+		httpServer: &fakeServer{},
+	}
+	manager.initializeSessionLifecycle(sess, "paused", "10")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	now = base.Add(30 * time.Minute)
+	if _, err := manager.PlayBeaming(context.Background(), domain.PlaybackControlRequest{SessionID: sess.ID}); err != nil {
+		t.Fatalf("play beaming: %v", err)
+	}
+
+	sess.stateMu.Lock()
+	lastProgressAt := sess.lastProgressAt
+	lastPosition := sess.lastPosition
+	sess.stateMu.Unlock()
+	if !lastProgressAt.Equal(now) {
+		t.Fatalf("expected last progress time to refresh to %s, got %s", now, lastProgressAt)
+	}
+	if lastPosition != "10" {
+		t.Fatalf("expected last position to remain unchanged, got %q", lastPosition)
+	}
+	if manager.shouldCleanupSession(sess, now) {
+		t.Fatal("expected resumed session not to be immediately idle-cleaned")
 	}
 }
 

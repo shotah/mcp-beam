@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/url"
 	"sort"
@@ -20,10 +19,9 @@ import (
 )
 
 const (
-	defaultTimeoutMS             = 2500
-	reachabilityWait             = 400 * time.Millisecond
-	defaultDiscoveryDelaySeconds = 1
-	maxPerAttemptTimeoutMS       = 3000
+	defaultTimeoutMS      = 2500
+	reachabilityWait      = 400 * time.Millisecond
+	discoveryPollInterval = 100 * time.Millisecond
 )
 
 var isReachableAddress = defaultReachableAddress
@@ -54,7 +52,7 @@ func (s *Service) ListLocalHardware(ctx context.Context, timeoutMS int, includeU
 	}
 
 	s.once.Do(func() {
-		s.adapter.StartChromecastDiscoveryLoop(s.loopCtx)
+		s.adapter.StartDiscovery(s.loopCtx)
 	})
 
 	resultCh := make(chan struct {
@@ -96,49 +94,34 @@ func (s *Service) ListLocalHardware(ctx context.Context, timeoutMS int, includeU
 }
 
 func (s *Service) loadAllDevicesUntilTimeout(ctx context.Context, timeoutMS int) ([]devices.Device, error) {
-	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
-	var lastErr error
+	deadline := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
+	defer deadline.Stop()
+
+	poll := time.NewTicker(discoveryPollInterval)
+	defer poll.Stop()
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 
-		remainingMS := int(time.Until(deadline).Milliseconds())
-		if remainingMS <= 0 {
-			if errors.Is(lastErr, devices.ErrNoDeviceAvailable) || lastErr == nil {
-				return []devices.Device{}, nil
-			}
-			return nil, lastErr
-		}
-
-		attemptTimeoutMS := remainingMS
-		if attemptTimeoutMS > maxPerAttemptTimeoutMS {
-			attemptTimeoutMS = maxPerAttemptTimeoutMS
-		}
-		attemptDelaySeconds := timeoutToDelaySeconds(attemptTimeoutMS)
-
-		loaded, err := s.adapter.LoadAllDevices(attemptDelaySeconds)
+		loaded, err := s.adapter.LoadAllDevices()
 		if err == nil {
 			if len(loaded) > 0 {
 				return loaded, nil
 			}
-			return []devices.Device{}, nil
-		}
-		if !errors.Is(err, devices.ErrNoDeviceAvailable) {
+		} else if !errors.Is(err, devices.ErrNoDeviceAvailable) {
 			return nil, err
 		}
 
-		lastErr = err
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return []devices.Device{}, nil
+		case <-poll.C:
+		}
 	}
-}
-
-func timeoutToDelaySeconds(timeoutMS int) int {
-	seconds := int(math.Ceil(float64(timeoutMS) / 1000.0))
-	if seconds <= 0 {
-		return defaultDiscoveryDelaySeconds
-	}
-	return seconds
 }
 
 func normalizeDevices(discovered []devices.Device) []domain.Device {

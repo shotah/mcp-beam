@@ -10,19 +10,19 @@ import (
 )
 
 type fakeAdapter struct {
-	loadAllDevices func(delaySeconds int) ([]devices.Device, error)
+	loadAllDevices func() ([]devices.Device, error)
 	startLoopCalls int
 }
 
-func (f *fakeAdapter) StartChromecastDiscoveryLoop(ctx context.Context) {
+func (f *fakeAdapter) StartDiscovery(ctx context.Context) {
 	f.startLoopCalls++
 }
 
-func (f *fakeAdapter) LoadAllDevices(delaySeconds int) ([]devices.Device, error) {
+func (f *fakeAdapter) LoadAllDevices() ([]devices.Device, error) {
 	if f.loadAllDevices == nil {
 		return nil, errors.New("not configured")
 	}
-	return f.loadAllDevices(delaySeconds)
+	return f.loadAllDevices()
 }
 
 func TestListLocalHardware_NormalizationSortingAndStableIDs(t *testing.T) {
@@ -35,7 +35,7 @@ func TestListLocalHardware_NormalizationSortingAndStableIDs(t *testing.T) {
 	}
 
 	adapter := &fakeAdapter{
-		loadAllDevices: func(delaySeconds int) ([]devices.Device, error) {
+		loadAllDevices: func() ([]devices.Device, error) {
 			return []devices.Device{
 				{Name: "Kitchen Speaker (Chromecast Audio)", Addr: "http://192.168.1.30:8009", Type: "Chromecast", IsAudioOnly: true},
 				{Name: "Bedroom TV", Addr: "http://192.168.1.10:1400/desc.xml", Type: "DLNA", IsAudioOnly: false},
@@ -93,7 +93,7 @@ func TestListLocalHardware_IncludeUnreachableFalseFiltersDevices(t *testing.T) {
 	}
 
 	adapter := &fakeAdapter{
-		loadAllDevices: func(delaySeconds int) ([]devices.Device, error) {
+		loadAllDevices: func() ([]devices.Device, error) {
 			return []devices.Device{
 				{Name: "Bedroom TV", Addr: "http://192.168.1.10:1400/desc.xml", Type: "DLNA"},
 				{Name: "Living Room TV", Addr: "http://192.168.1.20:8009", Type: "Chromecast"},
@@ -117,7 +117,7 @@ func TestListLocalHardware_IncludeUnreachableFalseFiltersDevices(t *testing.T) {
 
 func TestListLocalHardware_TimeoutReturnsEmptyList(t *testing.T) {
 	adapter := &fakeAdapter{
-		loadAllDevices: func(delaySeconds int) ([]devices.Device, error) {
+		loadAllDevices: func() ([]devices.Device, error) {
 			time.Sleep(120 * time.Millisecond)
 			return []devices.Device{{Name: "Late Device", Addr: "http://192.168.1.50:8009", Type: "Chromecast"}}, nil
 		},
@@ -138,25 +138,6 @@ func TestListLocalHardware_TimeoutReturnsEmptyList(t *testing.T) {
 	}
 }
 
-func TestTimeoutToDelaySecondsUsesCeil(t *testing.T) {
-	cases := []struct {
-		timeoutMS int
-		want      int
-	}{
-		{timeoutMS: 2500, want: 3},
-		{timeoutMS: 2000, want: 2},
-		{timeoutMS: 1, want: 1},
-		{timeoutMS: 0, want: 1},
-	}
-
-	for _, tc := range cases {
-		got := timeoutToDelaySeconds(tc.timeoutMS)
-		if got != tc.want {
-			t.Fatalf("timeoutToDelaySeconds(%d) = %d, want %d", tc.timeoutMS, got, tc.want)
-		}
-	}
-}
-
 func TestListLocalHardware_RetriesWithinTimeoutToCatchWarmupDevices(t *testing.T) {
 	origReachable := isReachableAddress
 	t.Cleanup(func() {
@@ -168,7 +149,7 @@ func TestListLocalHardware_RetriesWithinTimeoutToCatchWarmupDevices(t *testing.T
 
 	callCount := 0
 	adapter := &fakeAdapter{
-		loadAllDevices: func(delaySeconds int) ([]devices.Device, error) {
+		loadAllDevices: func() ([]devices.Device, error) {
 			callCount++
 			if callCount == 1 {
 				return nil, devices.ErrNoDeviceAvailable

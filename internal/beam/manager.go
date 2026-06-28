@@ -291,6 +291,114 @@ func (m *Manager) StopBeaming(_ context.Context, req domain.StopRequest) (*domai
 	}, nil
 }
 
+func (m *Manager) PlayBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error) {
+	return m.controlPlayback(ctx, req, "play")
+}
+
+func (m *Manager) PauseBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error) {
+	return m.controlPlayback(ctx, req, "pause")
+}
+
+func (m *Manager) controlPlayback(ctx context.Context, req domain.PlaybackControlRequest, action string) (*domain.PlaybackControlResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.isClosed() {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	if req.SessionID == "" && req.TargetDevice == "" {
+		return nil, toolError("INTERNAL_ERROR", "either session_id or target_device is required")
+	}
+
+	sess := m.findSessionByTarget(req.SessionID, req.TargetDevice)
+	if sess == nil {
+		return nil, toolError("DEVICE_NOT_FOUND", "no active session matches the provided target")
+	}
+
+	state := ""
+	switch action {
+	case "play":
+		if err := m.playSession(ctx, sess); err != nil {
+			return nil, err
+		}
+		state = "playing"
+	case "pause":
+		if err := m.pauseSession(ctx, sess); err != nil {
+			return nil, err
+		}
+		state = "paused"
+	default:
+		return nil, toolError("INTERNAL_ERROR", "invalid playback control action")
+	}
+
+	observedAt := m.now()
+	sess.stateMu.Lock()
+	sess.recordObservationLocked(state, "", observedAt)
+	if action == "play" {
+		sess.lastProgressAt = observedAt
+	}
+	sess.stateMu.Unlock()
+
+	return &domain.PlaybackControlResult{
+		OK:        true,
+		SessionID: sess.ID,
+		DeviceID:  sess.DeviceID,
+		State:     state,
+	}, nil
+}
+
+func (m *Manager) playSession(ctx context.Context, sess *session) error {
+	switch sess.Protocol {
+	case "chromecast":
+		if sess.castClient == nil {
+			return toolError("INTERNAL_ERROR", "chromecast session is not configured")
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.castClient.Play()
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to resume Chromecast playback: %v", err))
+		}
+	case "dlna":
+		if sess.dlnaPayload == nil {
+			return toolError("INTERNAL_ERROR", "dlna session is not configured")
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.dlnaPayload.SendtoTV("Play")
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to resume DLNA playback: %v", err))
+		}
+	default:
+		return unsupportedProtocolError(sess.Protocol)
+	}
+	return nil
+}
+
+func (m *Manager) pauseSession(ctx context.Context, sess *session) error {
+	switch sess.Protocol {
+	case "chromecast":
+		if sess.castClient == nil {
+			return toolError("INTERNAL_ERROR", "chromecast session is not configured")
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.castClient.Pause()
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to pause Chromecast playback: %v", err))
+		}
+	case "dlna":
+		if sess.dlnaPayload == nil {
+			return toolError("INTERNAL_ERROR", "dlna session is not configured")
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.dlnaPayload.SendtoTV("Pause")
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to pause DLNA playback: %v", err))
+		}
+	default:
+		return unsupportedProtocolError(sess.Protocol)
+	}
+	return nil
+}
+
 func (m *Manager) SeekBeaming(ctx context.Context, req domain.SeekRequest) (*domain.SeekResult, error) {
 	if ctx == nil {
 		ctx = context.Background()

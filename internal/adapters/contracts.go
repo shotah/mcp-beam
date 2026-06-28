@@ -10,8 +10,8 @@ import (
 
 // Discovery provides LAN hardware discovery primitives.
 type Discovery interface {
-	StartChromecastDiscoveryLoop(ctx context.Context)
-	LoadAllDevices(delaySeconds int) ([]devices.Device, error)
+	StartDiscovery(ctx context.Context)
+	LoadAllDevices() ([]devices.Device, error)
 }
 
 // CastClient represents a controllable Chromecast session.
@@ -19,6 +19,8 @@ type CastClient interface {
 	Connect() error
 	Load(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error
 	LoadOnExisting(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error
+	Play() error
+	Pause() error
 	Seek(seconds int) error
 	Stop() error
 	GetStatus() (*castprotocol.CastStatus, error)

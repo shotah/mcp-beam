@@ -28,6 +28,18 @@ type StopResult struct {
 	DeviceID         string `json:"device_id"`
 }
 
+type PlaybackControlRequest struct {
+	TargetDevice string `json:"target_device,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+}
+
+type PlaybackControlResult struct {
+	OK        bool   `json:"ok"`
+	SessionID string `json:"session_id"`
+	DeviceID  string `json:"device_id"`
+	State     string `json:"state"`
+}
+
 type SeekRequest struct {
 	TargetDevice    string   `json:"target_device,omitempty"`
 	SessionID       string   `json:"session_id,omitempty"`
