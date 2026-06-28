@@ -17,8 +17,8 @@ type Discovery interface {
 // CastClient represents a controllable Chromecast session.
 type CastClient interface {
 	Connect() error
-	Load(mediaURL, contentType string, startTime int, duration float64, subtitleURL string, live bool) error
-	LoadOnExisting(mediaURL, contentType string, startTime int, duration float64, subtitleURL string, live bool) error
+	Load(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error
+	LoadOnExisting(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error
 	Seek(seconds int) error
 	Stop() error
 	GetStatus() (*castprotocol.CastStatus, error)

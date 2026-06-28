@@ -11,9 +11,10 @@
 
 `mcp-beam` is a MCP server (`stdio` transport) for casting local files and media URLs to Chromecast and DLNA/UPnP devices on your LAN.
 
-It exposes four tools:
+It exposes five tools:
 - `list_local_hardware`
 - `beam_media`
+- `get_beaming_status`
 - `seek_beaming`
 - `stop_beaming`
 
@@ -91,7 +92,7 @@ go run go2tv.app/mcp-beam@latest --self-test
 
 1. Call `list_local_hardware` and pick a device `id`.
 2. Call `beam_media` with `source` and `target_device`.
-3. Call `seek_beaming` as needed.
+3. Call `get_beaming_status` or `seek_beaming` as needed.
 4. Call `stop_beaming` when done.
 
 Minimal example flow:
@@ -113,6 +114,15 @@ Minimal example flow:
     "source": "/absolute/path/to/video.mp4",
     "target_device": "dev_1234abcd",
     "transcode": "auto"
+  }
+}
+```
+
+```json
+{
+  "name": "get_beaming_status",
+  "arguments": {
+    "session_id": "sess_abcd1234"
   }
 }
 ```
@@ -365,6 +375,41 @@ Protocol notes:
 - DLNA `.m3u8` URLs are rejected with structured limitation details.
 - When `subtitles_path` is omitted for local files, mcp-beam auto-detects sidecar subtitles using the same basename (`.srt`, then `.vtt`).
 
+### `get_beaming_status`
+
+Get current playback status for an active beam session.
+
+Arguments:
+- `target_device` (optional string)
+- `session_id` (optional string)
+- At least one of `target_device` or `session_id` is required.
+
+Example:
+
+```json
+{
+  "name": "get_beaming_status",
+  "arguments": {
+    "session_id": "sess_abcd1234"
+  }
+}
+```
+
+On success, `structuredContent` includes:
+- `ok`
+- `session_id`
+- `device_id`
+- `device_name`
+- `protocol`
+- `state`
+- optional `position_seconds`
+- optional `duration_seconds`
+- optional `title`
+- optional `content_type`
+- `media_url`
+- `transcoding`
+- `warnings[]`
+
 ### `stop_beaming`
 
 Stop an active beam session.
@@ -544,8 +589,9 @@ Runtime model:
 Core flow:
 1. `list_local_hardware`: discover, normalize, stable IDs, optional reachability filter.
 2. `beam_media`: validate source, resolve target, choose protocol, decide transcode, start playback, persist session.
-3. `seek_beaming`: seek active sessions by `session_id` or `target_device`.
-4. `stop_beaming`: resolve session/device, stop protocol playback, tear down runtime resources.
+3. `get_beaming_status`: query active sessions by `session_id` or `target_device`.
+4. `seek_beaming`: seek active sessions by `session_id` or `target_device`.
+5. `stop_beaming`: resolve session/device, stop protocol playback, tear down runtime resources.
 
 Session lifecycle defaults:
 - `idle_cleanup_after = 10m`

@@ -31,7 +31,7 @@ func (DiscoveryAdapter) StartChromecastDiscoveryLoop(ctx context.Context) {
 }
 
 func (DiscoveryAdapter) LoadAllDevices(delaySeconds int) ([]devices.Device, error) {
-	return devices.LoadAllDevices(delaySeconds)
+	return devices.LoadAllDevices()
 }
 
 type CastFactory struct{}
@@ -53,12 +53,12 @@ func (c *CastClientAdapter) Connect() error {
 	return c.client.Connect()
 }
 
-func (c *CastClientAdapter) Load(mediaURL, contentType string, startTime int, duration float64, subtitleURL string, live bool) error {
-	return c.client.Load(mediaURL, contentType, startTime, duration, subtitleURL, live)
+func (c *CastClientAdapter) Load(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
+	return c.client.Load(mediaURL, contentType, title, startTime, duration, subtitleURL, live)
 }
 
-func (c *CastClientAdapter) LoadOnExisting(mediaURL, contentType string, startTime int, duration float64, subtitleURL string, live bool) error {
-	return c.client.LoadOnExisting(mediaURL, contentType, startTime, duration, subtitleURL, live)
+func (c *CastClientAdapter) LoadOnExisting(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
+	return c.client.LoadOnExisting(mediaURL, contentType, title, startTime, duration, subtitleURL, live)
 }
 
 func (c *CastClientAdapter) Seek(seconds int) error {

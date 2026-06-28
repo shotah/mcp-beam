@@ -34,6 +34,7 @@ type BeamController interface {
 	BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error)
 	StopBeaming(ctx context.Context, req domain.StopRequest) (*domain.StopResult, error)
 	SeekBeaming(ctx context.Context, req domain.SeekRequest) (*domain.SeekResult, error)
+	GetBeamingStatus(ctx context.Context, req domain.StatusRequest) (*domain.StatusResult, error)
 }
 
 type Server struct {
@@ -208,6 +209,8 @@ func (s *Server) handleToolCall(ctx context.Context, id json.RawMessage, rawPara
 		return s.handleStopBeamingCall(ctx, id, params.Arguments)
 	case "seek_beaming":
 		return s.handleSeekBeamingCall(ctx, id, params.Arguments)
+	case "get_beaming_status":
+		return s.handleGetBeamingStatusCall(ctx, id, params.Arguments)
 	default:
 		s.logCall(params.Name, "", "", startedAt, "TOOL_NOT_FOUND")
 		return s.send(response{
@@ -488,6 +491,62 @@ func (s *Server) handleSeekBeamingCall(ctx context.Context, id json.RawMessage, 
 	})
 }
 
+func (s *Server) handleGetBeamingStatusCall(ctx context.Context, id json.RawMessage, rawArgs json.RawMessage) error {
+	startedAt := time.Now()
+
+	if s.beamController == nil {
+		return s.sendToolInternalError("get_beaming_status", "", "", startedAt, id, "beam controller is not configured")
+	}
+
+	var args struct {
+		TargetDevice *string `json:"target_device,omitempty"`
+		SessionID    *string `json:"session_id,omitempty"`
+	}
+	if err := decodeStrict(rawArgs, &args); err != nil {
+		return s.sendInvalidParams("get_beaming_status", "", "", startedAt, id)
+	}
+
+	targetDevice := ""
+	sessionID := ""
+	if args.TargetDevice != nil {
+		targetDevice = strings.TrimSpace(*args.TargetDevice)
+	}
+	if args.SessionID != nil {
+		sessionID = strings.TrimSpace(*args.SessionID)
+	}
+	if targetDevice == "" && sessionID == "" {
+		return s.sendInvalidParams("get_beaming_status", targetDevice, sessionID, startedAt, id)
+	}
+
+	result, err := s.beamController.GetBeamingStatus(ctx, domain.StatusRequest{
+		TargetDevice: targetDevice,
+		SessionID:    sessionID,
+	})
+	if err != nil {
+		s.logCall("get_beaming_status", targetDevice, sessionID, startedAt, toolErrorCode(err))
+		return s.send(response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result:  toolErrorResultFromError(err),
+		})
+	}
+	s.logCall("get_beaming_status", result.DeviceID, result.SessionID, startedAt, "")
+
+	return s.send(response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: toolCallResult{
+			Content: []toolContent{
+				{
+					Type: "text",
+					Text: formatBeamingStatusText(result),
+				},
+			},
+			StructuredContent: result,
+		},
+	})
+}
+
 func (s *Server) handleListLocalHardwareCall(ctx context.Context, id json.RawMessage, rawArgs json.RawMessage) error {
 	startedAt := time.Now()
 
@@ -728,6 +787,26 @@ func formatDiscoveredDevices(devices []domain.Device) string {
 	return out.String()
 }
 
+func formatBeamingStatusText(result *domain.StatusResult) string {
+	if result == nil {
+		return "No beaming status available."
+	}
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "Session %s on device %s is %s.", result.SessionID, result.DeviceID, result.State)
+	if result.PositionSeconds != nil {
+		fmt.Fprintf(&out, " Position %.0fs", *result.PositionSeconds)
+		if result.DurationSeconds != nil {
+			fmt.Fprintf(&out, " of %.0fs", *result.DurationSeconds)
+		}
+		out.WriteByte('.')
+	}
+	if strings.TrimSpace(result.Title) != "" {
+		fmt.Fprintf(&out, " Title: %s.", strings.TrimSpace(result.Title))
+	}
+	return out.String()
+}
+
 func staticTools() []tool {
 	return []tool{
 		{
@@ -786,18 +865,18 @@ func staticTools() []tool {
 			},
 		},
 		{
-			Name:        "stop_beaming",
-			Description: "Stop, or halt active media playback/casting on a selected device or session.",
+			Name:        "get_beaming_status",
+			Description: "Get current playback status for an active beaming session, including state, position, duration, title, and content type when available.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"target_device": map[string]any{
 						"type":        "string",
-						"description": "The device ID or exact name of the device to stop playing on.",
+						"description": "The device ID or exact name of the session target.",
 					},
 					"session_id": map[string]any{
 						"type":        "string",
-						"description": "The unique session ID to stop. This is returned by a successful 'beam_media' call.",
+						"description": "The unique session ID to inspect. This is returned by a successful 'beam_media' call.",
 					},
 				},
 				"minProperties":        1,
@@ -839,6 +918,25 @@ func staticTools() []tool {
 						"description": "Relative seek delta from current playback position in seconds (use negative values to rewind).",
 					},
 				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        "stop_beaming",
+			Description: "Stop, or halt active media playback/casting on a selected device or session.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"target_device": map[string]any{
+						"type":        "string",
+						"description": "The device ID or exact name of the device to stop playing on.",
+					},
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "The unique session ID to stop. This is returned by a successful 'beam_media' call.",
+					},
+				},
+				"minProperties":        1,
 				"additionalProperties": false,
 			},
 		},

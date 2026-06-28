@@ -110,6 +110,7 @@ type fakeCastClient struct {
 	statuses            []castprotocol.CastStatus
 	loadURL             string
 	loadType            string
+	loadTitle           string
 	loadLive            bool
 	loadSubtitle        string
 	loadStartTime       int
@@ -142,7 +143,7 @@ func (f *fakeCastClient) Connect() error {
 	return f.connectErr
 }
 
-func (f *fakeCastClient) Load(mediaURL, contentType string, startTime int, duration float64, subtitleURL string, live bool) error {
+func (f *fakeCastClient) Load(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
 	if f.loadDelay > 0 {
 		time.Sleep(f.loadDelay)
 	}
@@ -152,6 +153,7 @@ func (f *fakeCastClient) Load(mediaURL, contentType string, startTime int, durat
 	f.loadCalls++
 	f.loadURL = mediaURL
 	f.loadType = contentType
+	f.loadTitle = title
 	f.loadLive = live
 	f.loadSubtitle = subtitleURL
 	f.loadStartTime = startTime
@@ -167,7 +169,7 @@ func (f *fakeCastClient) Load(mediaURL, contentType string, startTime int, durat
 	return f.loadErr
 }
 
-func (f *fakeCastClient) LoadOnExisting(mediaURL, contentType string, startTime int, duration float64, subtitleURL string, live bool) error {
+func (f *fakeCastClient) LoadOnExisting(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
 	if f.loadDelay > 0 {
 		time.Sleep(f.loadDelay)
 	}
@@ -177,6 +179,7 @@ func (f *fakeCastClient) LoadOnExisting(mediaURL, contentType string, startTime 
 	f.loadOnExistingCalls++
 	f.loadURL = mediaURL
 	f.loadType = contentType
+	f.loadTitle = title
 	f.loadLive = live
 	f.loadSubtitle = subtitleURL
 	return f.loadOnExistingErr
@@ -815,6 +818,115 @@ func TestSeekBeamingChromecastBySessionID(t *testing.T) {
 	}
 	if result.DurationSeconds != nil {
 		t.Fatalf("expected no duration for absolute seek, got %v", *result.DurationSeconds)
+	}
+}
+
+func TestGetBeamingStatusChromecastUsesCastStatus(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+
+	castClient := &fakeCastClient{
+		statuses: []castprotocol.CastStatus{
+			{
+				PlayerState: "PAUSED",
+				CurrentTime: 42,
+				Duration:    300,
+				MediaTitle:  "Remote Title",
+				ContentType: "video/mp4",
+			},
+		},
+	}
+	sess := &session{
+		ID:          "sess_status_cast",
+		DeviceID:    "dev_cast",
+		DeviceName:  "Living Room",
+		Protocol:    "chromecast",
+		MediaURL:    "http://127.0.0.1:3500/media.mp4",
+		Title:       "Session Title",
+		ContentType: "application/octet-stream",
+		castClient:  castClient,
+	}
+	manager.initializeSessionLifecycle(sess, "playing", "10")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	result, err := manager.GetBeamingStatus(context.Background(), domain.StatusRequest{
+		SessionID: "sess_status_cast",
+	})
+	if err != nil {
+		t.Fatalf("get beaming status: %v", err)
+	}
+	if !result.OK {
+		t.Fatal("expected status OK=true")
+	}
+	if result.State != "paused" {
+		t.Fatalf("expected paused state, got %s", result.State)
+	}
+	if result.PositionSeconds == nil || *result.PositionSeconds != 42 {
+		t.Fatalf("expected position 42, got %#v", result.PositionSeconds)
+	}
+	if result.DurationSeconds == nil || *result.DurationSeconds != 300 {
+		t.Fatalf("expected duration 300, got %#v", result.DurationSeconds)
+	}
+	if result.Title != "Remote Title" {
+		t.Fatalf("expected remote title, got %q", result.Title)
+	}
+	if result.ContentType != "video/mp4" {
+		t.Fatalf("expected video/mp4 content type, got %q", result.ContentType)
+	}
+	if castClient.statusCalls != 1 {
+		t.Fatalf("expected one status call, got %d", castClient.statusCalls)
+	}
+}
+
+func TestGetBeamingStatusDLNAUsesTransportAndPositionInfo(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+
+	dlnaPayload := &fakeDLNAPayload{
+		listenAddr:         "127.0.0.1:3511",
+		transportResponses: [][]string{{"PLAYING", "OK", "1"}},
+		positionResponse:   []string{"00:10:00", "00:01:05"},
+	}
+	sess := &session{
+		ID:          "sess_status_dlna",
+		DeviceID:    "dev_dlna",
+		DeviceName:  "Bedroom TV",
+		Protocol:    "dlna",
+		MediaURL:    "http://127.0.0.1:3511/media.mp4",
+		Title:       "Local Movie",
+		ContentType: "video/mp4",
+		dlnaPayload: dlnaPayload,
+	}
+	manager.initializeSessionLifecycle(sess, "buffering", "")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	result, err := manager.GetBeamingStatus(context.Background(), domain.StatusRequest{
+		TargetDevice: "Bedroom TV",
+	})
+	if err != nil {
+		t.Fatalf("get beaming status: %v", err)
+	}
+	if !result.OK {
+		t.Fatal("expected status OK=true")
+	}
+	if result.State != "playing" {
+		t.Fatalf("expected playing state, got %s", result.State)
+	}
+	if result.PositionSeconds == nil || *result.PositionSeconds != 65 {
+		t.Fatalf("expected position 65, got %#v", result.PositionSeconds)
+	}
+	if result.DurationSeconds == nil || *result.DurationSeconds != 600 {
+		t.Fatalf("expected duration 600, got %#v", result.DurationSeconds)
+	}
+	if result.Title != "Local Movie" {
+		t.Fatalf("expected session title, got %q", result.Title)
+	}
+	if result.ContentType != "video/mp4" {
+		t.Fatalf("expected session content type, got %q", result.ContentType)
 	}
 }
 

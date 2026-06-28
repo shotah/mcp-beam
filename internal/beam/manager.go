@@ -128,6 +128,8 @@ type session struct {
 	DeviceID    string
 	DeviceName  string
 	MediaURL    string
+	Title       string
+	ContentType string
 	Transcoding bool
 	Warnings    []string
 	Protocol    string
@@ -170,6 +172,7 @@ type chromecastTranscodeSeek struct {
 type preparedPlayback struct {
 	mediaURL      string
 	mediaType     string
+	title         string
 	subtitleURL   string
 	live          bool
 	transcoding   bool
@@ -182,6 +185,8 @@ type preparedPlayback struct {
 
 type preparedDLNA struct {
 	mediaURL     string
+	title        string
+	contentType  string
 	transcoding  bool
 	warnings     []string
 	httpServer   streamServer
@@ -360,10 +365,7 @@ func (m *Manager) SeekBeaming(ctx context.Context, req domain.SeekRequest) (*dom
 			return nil, toolError("INTERNAL_ERROR", "dlna session is not configured")
 		}
 
-		reltime, err := utils.SecondsToClockTime(resolvedSeconds)
-		if err != nil {
-			return nil, toolError("INTERNAL_ERROR", fmt.Sprintf("invalid seek position: %v", err))
-		}
+		reltime := utils.SecondsToClockTime(resolvedSeconds)
 
 		if sess.Transcoding {
 			if err := m.seekDLNATranscoded(ctx, sess, resolvedSeconds, reltime); err != nil {
@@ -403,6 +405,88 @@ func (m *Manager) SeekBeaming(ctx context.Context, req domain.SeekRequest) (*dom
 	}, nil
 }
 
+func (m *Manager) GetBeamingStatus(ctx context.Context, req domain.StatusRequest) (*domain.StatusResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.isClosed() {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	if req.SessionID == "" && req.TargetDevice == "" {
+		return nil, toolError("INTERNAL_ERROR", "either session_id or target_device is required")
+	}
+
+	sess := m.findStatusSession(req)
+	if sess == nil {
+		return nil, toolError("DEVICE_NOT_FOUND", "no active session matches the provided target")
+	}
+
+	result := statusResultFromSession(sess)
+	switch sess.Protocol {
+	case "chromecast":
+		if sess.castClient == nil {
+			return nil, toolError("INTERNAL_ERROR", "chromecast session is not configured")
+		}
+
+		var status *castprotocol.CastStatus
+		if err := m.withRetry(ctx, func() error {
+			var err error
+			status, err = sess.castClient.GetStatus()
+			return err
+		}); err != nil {
+			return nil, toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to query Chromecast playback status: %v", err))
+		}
+		if status == nil {
+			return nil, toolError("PROTOCOL_ERROR", "failed to query Chromecast playback status: empty status")
+		}
+
+		applyCastStatus(result, status, sess.mediaDuration)
+		positionText := ""
+		if result.PositionSeconds != nil {
+			positionText = strconv.Itoa(int(math.Round(*result.PositionSeconds)))
+		}
+		sess.stateMu.Lock()
+		sess.recordObservationLocked(result.State, positionText, m.now())
+		sess.stateMu.Unlock()
+	case "dlna":
+		if sess.dlnaPayload == nil {
+			return nil, toolError("INTERNAL_ERROR", "dlna session is not configured")
+		}
+
+		var transport []string
+		if err := m.withRetry(ctx, func() error {
+			var err error
+			transport, err = sess.dlnaPayload.GetTransportInfo()
+			return err
+		}); err != nil {
+			return nil, toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to query DLNA playback transport: %v", err))
+		}
+		if state := normalizeDLNATransport(transport); state != "" {
+			result.State = state
+		}
+
+		var positionInfo []string
+		positionErr := m.withRetry(ctx, func() error {
+			var err error
+			positionInfo, err = sess.dlnaPayload.GetPositionInfo()
+			return err
+		})
+		if positionErr == nil {
+			applyDLNAPositionInfo(result, positionInfo)
+		}
+
+		positionText := ""
+		if len(positionInfo) >= 2 {
+			positionText = strings.TrimSpace(positionInfo[1])
+		}
+		sess.recordDLNAState(result.State, positionText, false, m.now())
+	default:
+		return nil, unsupportedProtocolError(sess.Protocol)
+	}
+
+	return result, nil
+}
+
 func (m *Manager) seekChromecastTranscoded(ctx context.Context, sess *session, resolvedSeconds int) error {
 	if sess == nil || sess.castClient == nil {
 		return errors.New("chromecast session is not configured")
@@ -430,7 +514,7 @@ func (m *Manager) seekChromecastTranscoded(ctx context.Context, sess *session, r
 	mediaURL := "http://" + parsedMediaURL.Host + plan.route
 	loadResultCh := make(chan error, 1)
 	go func() {
-		loadResultCh <- sess.castClient.LoadOnExisting(mediaURL, "video/mp4", 0, sess.mediaDuration, "", false)
+		loadResultCh <- sess.castClient.LoadOnExisting(mediaURL, "video/mp4", sess.Title, 0, sess.mediaDuration, "", false)
 	}()
 
 	if err := m.waitForChromecastPlaybackStart(ctx, sess.castClient, loadResultCh); err != nil {
@@ -500,7 +584,7 @@ func (m *Manager) beamChromecast(ctx context.Context, req domain.BeamRequest, de
 	go func() {
 		// castprotocol.Load blocks until media completes; run it asynchronously and unblock as soon as
 		// device state reports playback started.
-		loadResultCh <- client.Load(playback.mediaURL, playback.mediaType, startTime, playback.mediaDuration, playback.subtitleURL, playback.live)
+		loadResultCh <- client.Load(playback.mediaURL, playback.mediaType, playback.title, startTime, playback.mediaDuration, playback.subtitleURL, playback.live)
 	}()
 
 	if err := m.waitForChromecastPlaybackStart(ctx, client, loadResultCh); err != nil {
@@ -514,6 +598,8 @@ func (m *Manager) beamChromecast(ctx context.Context, req domain.BeamRequest, de
 		DeviceID:      device.ID,
 		DeviceName:    device.Name,
 		MediaURL:      playback.mediaURL,
+		Title:         playback.title,
+		ContentType:   playback.mediaType,
 		Transcoding:   playback.transcoding,
 		Warnings:      playback.warnings,
 		Protocol:      "chromecast",
@@ -623,6 +709,8 @@ func (m *Manager) beamDLNA(ctx context.Context, req domain.BeamRequest, device *
 		DeviceID:      device.ID,
 		DeviceName:    device.Name,
 		MediaURL:      prepared.mediaURL,
+		Title:         prepared.title,
+		ContentType:   prepared.contentType,
 		Transcoding:   prepared.transcoding,
 		Warnings:      append([]string{}, prepared.warnings...),
 		Protocol:      "dlna",
@@ -792,6 +880,7 @@ func (m *Manager) prepareFilePlayback(req domain.BeamRequest, device *domain.Dev
 	return &preparedPlayback{
 		mediaURL:      "http://" + listenAddr + route,
 		mediaType:     mediaType,
+		title:         mediaTitleFor(source),
 		subtitleURL:   subtitleURL,
 		live:          false,
 		transcoding:   transcoding,
@@ -815,6 +904,7 @@ func (m *Manager) prepareURLPlayback(ctx context.Context, req domain.BeamRequest
 		return &preparedPlayback{
 			mediaURL:    sourceURL,
 			mediaType:   "application/vnd.apple.mpegurl",
+			title:       mediaTitleFor(sourceURL),
 			subtitleURL: "",
 			live:        true,
 			warnings:    []string{},
@@ -898,6 +988,7 @@ func (m *Manager) prepareURLPlayback(ctx context.Context, req domain.BeamRequest
 	return &preparedPlayback{
 		mediaURL:     "http://" + listenAddr + route,
 		mediaType:    mediaType,
+		title:        mediaTitleFor(sourceURL),
 		subtitleURL:  subtitleURL,
 		live:         true,
 		transcoding:  transcoding,
@@ -928,6 +1019,8 @@ func (m *Manager) prepareDLNAFilePlayback(ctx context.Context, req domain.BeamRe
 	if err != nil {
 		return nil, err
 	}
+	prepared.title = mediaTitleFor(source)
+	prepared.contentType = mediaType
 	prepared.warnings = append(prepared.warnings, warnings...)
 	return prepared, nil
 }
@@ -959,6 +1052,8 @@ func (m *Manager) prepareDLNAURLPlayback(ctx context.Context, req domain.BeamReq
 		directType := detectURLMediaType(sourceURL)
 		direct, directErr := m.startDLNAServerAndPlay(directCtx, device, []byte("dlna-direct-url-placeholder"), directType, sourceURL, subtitlesPath, false, "", startSeconds(req.StartSeconds), sourceURL)
 		if directErr == nil {
+			direct.title = mediaTitleFor(sourceURL)
+			direct.contentType = directType
 			direct.warnings = append(direct.warnings, warnings...)
 			return direct, nil
 		}
@@ -999,6 +1094,8 @@ func (m *Manager) prepareDLNAURLPlayback(ctx context.Context, req domain.BeamReq
 		}
 		return nil, err
 	}
+	prepared.title = mediaTitleFor(sourceURL)
+	prepared.contentType = mediaType
 	prepared.warnings = append(prepared.warnings, warnings...)
 	prepared.sourceCloser = asCloser(preparedMedia)
 	return prepared, nil
@@ -1043,11 +1140,7 @@ func (m *Manager) startDLNAServerAndPlay(
 	}
 
 	if !transcoding && startAtSeconds > 0 {
-		reltime, err := utils.SecondsToClockTime(startAtSeconds)
-		if err != nil {
-			server.StopServer()
-			return nil, toolError("INTERNAL_ERROR", fmt.Sprintf("invalid start_seconds: %v", err))
-		}
+		reltime := utils.SecondsToClockTime(startAtSeconds)
 		if err := m.withRetry(ctx, func() error {
 			return payload.SeekSoapCall(reltime)
 		}); err != nil {
@@ -1461,14 +1554,22 @@ func (m *Manager) takeSession(req domain.StopRequest) *session {
 }
 
 func (m *Manager) findSession(req domain.SeekRequest) *session {
+	return m.findSessionByTarget(req.SessionID, req.TargetDevice)
+}
+
+func (m *Manager) findStatusSession(req domain.StatusRequest) *session {
+	return m.findSessionByTarget(req.SessionID, req.TargetDevice)
+}
+
+func (m *Manager) findSessionByTarget(sessionID, targetDevice string) *session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if req.SessionID != "" {
-		return m.sessionsByID[req.SessionID]
+	if sessionID != "" {
+		return m.sessionsByID[sessionID]
 	}
 
-	target := strings.TrimSpace(req.TargetDevice)
+	target := strings.TrimSpace(targetDevice)
 	if target == "" {
 		return nil
 	}
@@ -1487,6 +1588,117 @@ func (m *Manager) findSession(req domain.SeekRequest) *session {
 	}
 
 	return nil
+}
+
+func statusResultFromSession(sess *session) *domain.StatusResult {
+	result := &domain.StatusResult{
+		OK:          true,
+		SessionID:   sess.ID,
+		DeviceID:    sess.DeviceID,
+		DeviceName:  sess.DeviceName,
+		Protocol:    sess.Protocol,
+		State:       "unknown",
+		Title:       strings.TrimSpace(sess.Title),
+		ContentType: strings.TrimSpace(sess.ContentType),
+		MediaURL:    strings.TrimSpace(sess.MediaURL),
+		Transcoding: sess.Transcoding,
+		Warnings:    append([]string{}, sess.Warnings...),
+	}
+
+	if sess.mediaDuration > 0 {
+		result.DurationSeconds = float64Ptr(sess.mediaDuration)
+	}
+
+	sess.stateMu.Lock()
+	state := strings.TrimSpace(sess.normalizedState)
+	position := strings.TrimSpace(sess.lastPosition)
+	sess.stateMu.Unlock()
+
+	if state != "" {
+		result.State = state
+	}
+	if parsed := parseSessionPositionSeconds(sess.Protocol, position); parsed != nil {
+		result.PositionSeconds = parsed
+	}
+
+	return result
+}
+
+func applyCastStatus(result *domain.StatusResult, status *castprotocol.CastStatus, fallbackDuration float64) {
+	if result == nil || status == nil {
+		return
+	}
+
+	if state := normalizeCastState(status.PlayerState); state != "" {
+		result.State = state
+	}
+	position := float64(status.CurrentTime)
+	if position < 0 {
+		position = 0
+	}
+	result.PositionSeconds = float64Ptr(position)
+
+	duration := float64(status.Duration)
+	if duration <= 0 {
+		duration = fallbackDuration
+	}
+	if duration > 0 {
+		result.DurationSeconds = float64Ptr(duration)
+	}
+
+	if title := strings.TrimSpace(status.MediaTitle); title != "" {
+		result.Title = title
+	}
+	if contentType := strings.TrimSpace(status.ContentType); contentType != "" {
+		result.ContentType = contentType
+	}
+}
+
+func applyDLNAPositionInfo(result *domain.StatusResult, positionInfo []string) {
+	if result == nil {
+		return
+	}
+	if len(positionInfo) >= 1 {
+		if duration := clockTimeSecondsPtr(positionInfo[0], false); duration != nil {
+			result.DurationSeconds = duration
+		}
+	}
+	if len(positionInfo) >= 2 {
+		if position := clockTimeSecondsPtr(positionInfo[1], true); position != nil {
+			result.PositionSeconds = position
+		}
+	}
+}
+
+func parseSessionPositionSeconds(protocol, position string) *float64 {
+	position = strings.TrimSpace(position)
+	if position == "" {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(protocol), "dlna") {
+		return clockTimeSecondsPtr(position, true)
+	}
+	seconds, err := strconv.ParseFloat(position, 64)
+	if err != nil || seconds < 0 {
+		return nil
+	}
+	return float64Ptr(seconds)
+}
+
+func clockTimeSecondsPtr(value string, allowZero bool) *float64 {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "NOT_IMPLEMENTED") {
+		return nil
+	}
+	seconds, err := utils.ClockTimeToSeconds(value)
+	if err != nil || seconds < 0 || (!allowZero && seconds == 0) {
+		return nil
+	}
+	return float64Ptr(float64(seconds))
+}
+
+func float64Ptr(v float64) *float64 {
+	return &v
 }
 
 func (m *Manager) resolveSeekPosition(ctx context.Context, sess *session, req domain.SeekRequest) (resolvedSeconds int, durationSeconds float64, mode string, err error) {
@@ -2046,6 +2258,20 @@ func mediaRouteFor(source string) string {
 		ext = ".bin"
 	}
 	return "/media-" + randomToken(8) + ext
+}
+
+func mediaTitleFor(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(source); err == nil && parsed.Scheme != "" {
+		if base := path.Base(strings.TrimSpace(parsed.Path)); base != "" && base != "." && base != "/" {
+			return base
+		}
+		return strings.TrimSpace(parsed.Host)
+	}
+	return strings.TrimSpace(filepath.Base(source))
 }
 
 func mediaExt(source string) string {

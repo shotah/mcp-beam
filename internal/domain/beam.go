@@ -47,6 +47,27 @@ type SeekResult struct {
 	DurationSeconds         *float64 `json:"duration_seconds,omitempty"`
 }
 
+type StatusRequest struct {
+	TargetDevice string `json:"target_device,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+}
+
+type StatusResult struct {
+	OK              bool     `json:"ok"`
+	SessionID       string   `json:"session_id"`
+	DeviceID        string   `json:"device_id"`
+	DeviceName      string   `json:"device_name,omitempty"`
+	Protocol        string   `json:"protocol"`
+	State           string   `json:"state"`
+	PositionSeconds *float64 `json:"position_seconds,omitempty"`
+	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
+	Title           string   `json:"title,omitempty"`
+	ContentType     string   `json:"content_type,omitempty"`
+	MediaURL        string   `json:"media_url,omitempty"`
+	Transcoding     bool     `json:"transcoding"`
+	Warnings        []string `json:"warnings,omitempty"`
+}
+
 type ToolError struct {
 	Code           string         `json:"code"`
 	Message        string         `json:"message"`

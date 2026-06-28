@@ -28,19 +28,22 @@ type fakeLocalHardwareLister struct {
 }
 
 type fakeBeamController struct {
-	mu         sync.Mutex
-	beamReq    domain.BeamRequest
-	beamResult *domain.BeamResult
-	beamErr    error
-	stopReq    domain.StopRequest
-	stopResult *domain.StopResult
-	stopErr    error
-	seekReq    domain.SeekRequest
-	seekResult *domain.SeekResult
-	seekErr    error
-	beamBlock  <-chan struct{}
-	beamCalled chan struct{}
-	beamOnce   sync.Once
+	mu           sync.Mutex
+	beamReq      domain.BeamRequest
+	beamResult   *domain.BeamResult
+	beamErr      error
+	stopReq      domain.StopRequest
+	stopResult   *domain.StopResult
+	stopErr      error
+	seekReq      domain.SeekRequest
+	seekResult   *domain.SeekResult
+	seekErr      error
+	statusReq    domain.StatusRequest
+	statusResult *domain.StatusResult
+	statusErr    error
+	beamBlock    <-chan struct{}
+	beamCalled   chan struct{}
+	beamOnce     sync.Once
 }
 
 func (f *fakeBeamController) BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error) {
@@ -68,6 +71,13 @@ func (f *fakeBeamController) SeekBeaming(ctx context.Context, req domain.SeekReq
 	f.seekReq = req
 	f.mu.Unlock()
 	return f.seekResult, f.seekErr
+}
+
+func (f *fakeBeamController) GetBeamingStatus(ctx context.Context, req domain.StatusRequest) (*domain.StatusResult, error) {
+	f.mu.Lock()
+	f.statusReq = req
+	f.mu.Unlock()
+	return f.statusResult, f.statusErr
 }
 
 func (f *fakeLocalHardwareLister) ListLocalHardware(ctx context.Context, timeoutMS int, includeUnreachable bool) ([]domain.Device, error) {
@@ -120,8 +130,8 @@ func TestInitializeAndToolsList(t *testing.T) {
 
 	toolResult := responses[1]["result"].(map[string]any)
 	tools := toolResult["tools"].([]any)
-	if len(tools) != 4 {
-		t.Fatalf("expected 4 tools, got %d", len(tools))
+	if len(tools) != 5 {
+		t.Fatalf("expected 5 tools, got %d", len(tools))
 	}
 }
 
@@ -915,6 +925,103 @@ func TestToolsCallStopBeamingJSONLine(t *testing.T) {
 	structured := result["structuredContent"].(map[string]any)
 	if structured["stopped_session_id"].(string) != "sess_json_stop" {
 		t.Fatalf("unexpected stopped_session_id: %v", structured["stopped_session_id"])
+	}
+}
+
+func TestToolsCallGetBeamingStatus(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	output := bytes.NewBuffer(nil)
+	position := 42.0
+	duration := 300.0
+	controller := &fakeBeamController{
+		statusResult: &domain.StatusResult{
+			OK:              true,
+			SessionID:       "sess_status_1",
+			DeviceID:        "dev_1",
+			DeviceName:      "Living Room",
+			Protocol:        "chromecast",
+			State:           "playing",
+			PositionSeconds: &position,
+			DurationSeconds: &duration,
+			Title:           "movie.mp4",
+			ContentType:     "video/mp4",
+			MediaURL:        "http://127.0.0.1:3500/media.mp4",
+			Transcoding:     false,
+		},
+	}
+
+	writeRequest(t, input, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      88,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "get_beaming_status",
+			"arguments": map[string]any{
+				"session_id": "sess_status_1",
+			},
+		},
+	})
+
+	srv := New(input, output, Config{BeamController: controller})
+	if err := srv.Run(context.Background()); err != nil {
+		t.Fatalf("run server: %v", err)
+	}
+
+	responses := readResponses(t, output.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(responses))
+	}
+	result := responses[0]["result"].(map[string]any)
+	structured := result["structuredContent"].(map[string]any)
+	if structured["session_id"].(string) != "sess_status_1" {
+		t.Fatalf("unexpected session_id: %v", structured["session_id"])
+	}
+	if structured["state"].(string) != "playing" {
+		t.Fatalf("unexpected state: %v", structured["state"])
+	}
+	if structured["title"].(string) != "movie.mp4" {
+		t.Fatalf("unexpected title: %v", structured["title"])
+	}
+	if structured["content_type"].(string) != "video/mp4" {
+		t.Fatalf("unexpected content_type: %v", structured["content_type"])
+	}
+	if structured["position_seconds"].(float64) != 42 {
+		t.Fatalf("unexpected position_seconds: %v", structured["position_seconds"])
+	}
+	if structured["duration_seconds"].(float64) != 300 {
+		t.Fatalf("unexpected duration_seconds: %v", structured["duration_seconds"])
+	}
+	if controller.statusReq.SessionID != "sess_status_1" {
+		t.Fatalf("unexpected status request session: %s", controller.statusReq.SessionID)
+	}
+}
+
+func TestToolsCallGetBeamingStatusInvalidParams(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	output := bytes.NewBuffer(nil)
+
+	writeRequest(t, input, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      89,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_beaming_status",
+			"arguments": map[string]any{},
+		},
+	})
+
+	srv := New(input, output, Config{BeamController: &fakeBeamController{}})
+	if err := srv.Run(context.Background()); err != nil {
+		t.Fatalf("run server: %v", err)
+	}
+
+	responses := readResponses(t, output.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(responses))
+	}
+	errObj := responses[0]["error"].(map[string]any)
+	if errObj["code"].(float64) != -32602 {
+		t.Fatalf("expected -32602, got %v", errObj["code"])
 	}
 }
 
