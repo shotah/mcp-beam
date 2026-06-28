@@ -434,6 +434,7 @@ func (f *fakeServer) StartServing(serverStarted chan<- error) {
 
 func (f *fakeServer) StartServer(serverStarted chan<- error, media, subtitles any, tvpayload *soapcalls.TVPayload, screen httphandlers.Screen) {
 	f.startServerCalled = true
+	f.lastMedia = media
 	f.lastScreen = screen
 	serverStarted <- nil
 }
@@ -1640,6 +1641,117 @@ func TestBeamMediaResolveDeviceMatchesChromecastSuffixedName(t *testing.T) {
 	}
 }
 
+func TestBeamMediaChromecastURLDirectMP4UsesOriginalURL(t *testing.T) {
+	const sourceURL = "https://example.com/video.mp4"
+	discovery := &fakeDiscovery{devices: []domain.Device{{
+		ID:       "dev_url_direct",
+		Name:     "Direct URL TV",
+		Address:  "http://127.0.0.1:8009",
+		Protocol: "chromecast",
+	}}}
+	castClient := &fakeCastClient{}
+	manager := NewManager(discovery, &fakeCastFactory{client: castClient}, nil)
+	defer manager.Close(context.Background())
+	serverFactory := &fakeServerFactory{}
+	manager.serverFactory = serverFactory
+	probe := &fakeCloser{}
+	manager.prepareURLMedia = func(ctx context.Context, sourceURL string) (any, string, error) {
+		return probe, "video/mp4", nil
+	}
+
+	result, err := manager.BeamMedia(context.Background(), domain.BeamRequest{
+		Source:       sourceURL,
+		TargetDevice: "dev_url_direct",
+		Transcode:    "auto",
+	})
+	if err != nil {
+		t.Fatalf("beam media: %v", err)
+	}
+	if result.MediaURL != sourceURL {
+		t.Fatalf("expected original source URL, got %s", result.MediaURL)
+	}
+	if castClient.loadURL != sourceURL {
+		t.Fatalf("expected Chromecast load URL %s, got %s", sourceURL, castClient.loadURL)
+	}
+	if castClient.loadType != "video/mp4" {
+		t.Fatalf("expected video/mp4 load type, got %s", castClient.loadType)
+	}
+	if !castClient.loadLive {
+		t.Fatal("expected direct URL load to be marked live")
+	}
+	if !probe.closed {
+		t.Fatal("expected URL probe stream to be closed")
+	}
+	if len(serverFactory.servers) != 0 {
+		t.Fatalf("expected no local media server for direct URL playback, got %d", len(serverFactory.servers))
+	}
+	if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[0], "direct URL stream") {
+		t.Fatalf("expected direct URL warning, got %#v", result.Warnings)
+	}
+}
+
+func TestBeamMediaChromecastURLDirectMP4HostsOnlySubtitles(t *testing.T) {
+	tmpDir := t.TempDir()
+	subtitlesPath := filepath.Join(tmpDir, "subs.vtt")
+	if err := os.WriteFile(subtitlesPath, []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\ncaption\n"), 0o600); err != nil {
+		t.Fatalf("write subtitles: %v", err)
+	}
+
+	const sourceURL = "https://example.com/video.mp4"
+	discovery := &fakeDiscovery{devices: []domain.Device{{
+		ID:       "dev_url_subtitles",
+		Name:     "Direct URL Subtitles TV",
+		Address:  "http://127.0.0.1:8009",
+		Protocol: "chromecast",
+	}}}
+	castClient := &fakeCastClient{}
+	manager := NewManager(discovery, &fakeCastFactory{client: castClient}, nil)
+	defer manager.Close(context.Background())
+	serverFactory := &fakeServerFactory{}
+	manager.serverFactory = serverFactory
+	manager.listenAddressForDevice = func(deviceAddress string) (string, error) {
+		return "127.0.0.1:3573", nil
+	}
+	probe := &fakeCloser{}
+	manager.prepareURLMedia = func(ctx context.Context, sourceURL string) (any, string, error) {
+		return probe, "video/mp4", nil
+	}
+
+	result, err := manager.BeamMedia(context.Background(), domain.BeamRequest{
+		Source:        sourceURL,
+		TargetDevice:  "dev_url_subtitles",
+		Transcode:     "never",
+		SubtitlesPath: subtitlesPath,
+	})
+	if err != nil {
+		t.Fatalf("beam media: %v", err)
+	}
+	if result.MediaURL != sourceURL {
+		t.Fatalf("expected original source URL, got %s", result.MediaURL)
+	}
+	if castClient.loadURL != sourceURL {
+		t.Fatalf("expected Chromecast load URL %s, got %s", sourceURL, castClient.loadURL)
+	}
+	if castClient.loadSubtitle == "" || !strings.HasPrefix(castClient.loadSubtitle, "http://127.0.0.1:3573/subs-") {
+		t.Fatalf("expected hosted subtitle URL, got %s", castClient.loadSubtitle)
+	}
+	if !probe.closed {
+		t.Fatal("expected URL probe stream to be closed")
+	}
+	if len(serverFactory.servers) != 1 {
+		t.Fatalf("expected one subtitle server, got %d", len(serverFactory.servers))
+	}
+	if !serverFactory.servers[0].startCalled {
+		t.Fatal("expected subtitle server to start")
+	}
+	if serverFactory.servers[0].addCount != 1 {
+		t.Fatalf("expected only subtitles handler, got %d handlers", serverFactory.servers[0].addCount)
+	}
+	if serverFactory.servers[0].lastMedia != subtitlesPath {
+		t.Fatalf("expected subtitle handler media %q, got %#v", subtitlesPath, serverFactory.servers[0].lastMedia)
+	}
+}
+
 func TestBeamMediaTranscodeAlwaysNeedsFFmpeg(t *testing.T) {
 	tmpDir := t.TempDir()
 	mediaPath := filepath.Join(tmpDir, "sample.mp4")
@@ -2336,15 +2448,9 @@ func TestBeamMediaDLNAFileAndStopWithHybridMonitor(t *testing.T) {
 	}
 }
 
-func TestBeamMediaDLNAURLDirectThenProxyFallback(t *testing.T) {
-	direct := &fakeDLNAPayload{
-		listenAddr: "127.0.0.1:3520",
-		actionErr: map[string]error{
-			"Play1": errors.New("dmr rejected direct URI"),
-		},
-	}
-	proxy := &fakeDLNAPayload{listenAddr: "127.0.0.1:3521"}
-	factory := &fakeDLNAFactory{payloads: []*fakeDLNAPayload{direct, proxy}}
+func TestBeamMediaDLNAURLUsesLocalProxy(t *testing.T) {
+	payload := &fakeDLNAPayload{listenAddr: "127.0.0.1:3520"}
+	factory := &fakeDLNAFactory{payloads: []*fakeDLNAPayload{payload}}
 
 	manager := NewManager(&fakeDiscovery{devices: []domain.Device{{
 		ID:       "dlna_1",
@@ -2353,9 +2459,11 @@ func TestBeamMediaDLNAURLDirectThenProxyFallback(t *testing.T) {
 		Protocol: "dlna",
 	}}}, nil, factory)
 	defer manager.Close(context.Background())
-	manager.serverFactory = &fakeServerFactory{}
+	serverFactory := &fakeServerFactory{}
+	manager.serverFactory = serverFactory
+	preparedStream := io.NopCloser(strings.NewReader("video-bytes"))
 	manager.prepareURLMedia = func(ctx context.Context, sourceURL string) (any, string, error) {
-		return io.NopCloser(strings.NewReader("video-bytes")), "video/mp4", nil
+		return preparedStream, "video/mp4", nil
 	}
 
 	result, err := manager.BeamMedia(context.Background(), domain.BeamRequest{
@@ -2369,67 +2477,23 @@ func TestBeamMediaDLNAURLDirectThenProxyFallback(t *testing.T) {
 	if !result.OK {
 		t.Fatal("expected OK result")
 	}
-	if factory.calls != 2 {
-		t.Fatalf("expected two payload attempts (direct + proxy), got %d", factory.calls)
+	if factory.calls != 1 {
+		t.Fatalf("expected one proxied payload attempt, got %d", factory.calls)
 	}
-	if direct.actionCount("Play1") != 1 {
-		t.Fatalf("expected direct Play1 once, got %d", direct.actionCount("Play1"))
+	if payload.actionCount("Play1") != 1 {
+		t.Fatalf("expected proxied Play1 once, got %d", payload.actionCount("Play1"))
 	}
-	if proxy.actionCount("Play1") != 1 {
-		t.Fatalf("expected proxy Play1 once, got %d", proxy.actionCount("Play1"))
+	if len(serverFactory.servers) != 1 || !serverFactory.servers[0].startServerCalled {
+		t.Fatal("expected DLNA local proxy server to start")
 	}
-	if !containsWarning(result.Warnings, "falling back") {
-		t.Fatalf("expected fallback warning, got %v", result.Warnings)
+	if serverFactory.servers[0].lastMedia != preparedStream {
+		t.Fatalf("expected prepared URL stream to be served, got %#v", serverFactory.servers[0].lastMedia)
 	}
-}
-
-func TestBeamMediaDLNAURLDirectAttemptTimeoutFallsBack(t *testing.T) {
-	direct := &fakeDLNAPayload{
-		listenAddr:                "127.0.0.1:3522",
-		blockPlayUntilContextDone: true,
+	if result.MediaURL != "http://127.0.0.1:3520/media-token.mp4" {
+		t.Fatalf("expected local proxy media URL, got %s", result.MediaURL)
 	}
-	proxy := &fakeDLNAPayload{listenAddr: "127.0.0.1:3523"}
-	factory := &fakeDLNAFactory{payloads: []*fakeDLNAPayload{direct, proxy}}
-
-	manager := NewManager(&fakeDiscovery{devices: []domain.Device{{
-		ID:       "dlna_1",
-		Name:     "Bedroom TV",
-		Address:  "http://192.168.1.12:1400/device.xml",
-		Protocol: "dlna",
-	}}}, nil, factory)
-	defer manager.Close(context.Background())
-	manager.serverFactory = &fakeServerFactory{}
-	manager.prepareURLMedia = func(ctx context.Context, sourceURL string) (any, string, error) {
-		return io.NopCloser(strings.NewReader("video-bytes")), "video/mp4", nil
-	}
-	manager.dlnaDirectURLAttemptTimeout = 25 * time.Millisecond
-
-	startedAt := time.Now()
-	result, err := manager.BeamMedia(context.Background(), domain.BeamRequest{
-		Source:       "https://example.com/video.mp4",
-		TargetDevice: "dlna_1",
-		Transcode:    "auto",
-	})
-	if err != nil {
-		t.Fatalf("beam media: %v", err)
-	}
-	if !result.OK {
-		t.Fatal("expected OK result")
-	}
-	if time.Since(startedAt) > 750*time.Millisecond {
-		t.Fatalf("expected fast fallback after direct timeout, elapsed=%s", time.Since(startedAt))
-	}
-	if factory.calls != 2 {
-		t.Fatalf("expected two payload attempts (direct + proxy), got %d", factory.calls)
-	}
-	if direct.actionCount("Play1") != 1 {
-		t.Fatalf("expected direct Play1 once, got %d", direct.actionCount("Play1"))
-	}
-	if proxy.actionCount("Play1") != 1 {
-		t.Fatalf("expected proxy Play1 once, got %d", proxy.actionCount("Play1"))
-	}
-	if !containsWarning(result.Warnings, "falling back") {
-		t.Fatalf("expected fallback warning, got %v", result.Warnings)
+	if containsWarning(result.Warnings, "falling back") {
+		t.Fatalf("expected no direct fallback warning, got %v", result.Warnings)
 	}
 }
 

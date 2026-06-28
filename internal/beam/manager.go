@@ -50,7 +50,6 @@ const (
 	defaultRetryMaxBackoff  = 800 * time.Millisecond
 
 	defaultBeamOperationTimeout        = 12 * time.Second
-	defaultDLNADirectURLAttemptTimeout = 4 * time.Second
 	defaultChromecastLoadDeadlineGrace = 4 * time.Second
 	defaultChromecastStatusPollEvery   = 250 * time.Millisecond
 
@@ -108,7 +107,6 @@ type Manager struct {
 	retryMaxBackoff  time.Duration
 
 	beamOperationTimeout        time.Duration
-	dlnaDirectURLAttemptTimeout time.Duration
 	chromecastLoadDeadlineGrace time.Duration
 	chromecastStatusPollEvery   time.Duration
 
@@ -220,7 +218,6 @@ func NewManager(discovery deviceLister, castFactory adapters.CastFactory, dlnaFa
 		retryBaseBackoff:            defaultRetryBaseBackoff,
 		retryMaxBackoff:             defaultRetryMaxBackoff,
 		beamOperationTimeout:        defaultBeamOperationTimeout,
-		dlnaDirectURLAttemptTimeout: defaultDLNADirectURLAttemptTimeout,
 		chromecastLoadDeadlineGrace: defaultChromecastLoadDeadlineGrace,
 		chromecastStatusPollEvery:   defaultChromecastStatusPollEvery,
 		cleanupLoopCancel:           cleanupCancel,
@@ -1039,8 +1036,18 @@ func (m *Manager) prepareURLPlayback(ctx context.Context, req domain.BeamRequest
 	}
 
 	warnings := []string{}
-	transcoding := false
+	if mode != transcodeAlways {
+		if closer := asCloser(preparedMedia); closer != nil {
+			_ = closer.Close()
+		}
+		if mode == transcodeAuto && strings.Contains(mediaType, "video") {
+			warnings = append(warnings, "auto transcode for URL sources defaults to direct URL stream")
+		}
+		return m.prepareDirectURLPlayback(device, sourceURL, mediaType, subtitlesPath, warnings)
+	}
+
 	ffmpegPath := ""
+	transcoding := false
 	if mode == transcodeAlways {
 		if strings.Contains(mediaType, "video") {
 			ffmpegPath, err = m.requireFFmpeg()
@@ -1054,8 +1061,12 @@ func (m *Manager) prepareURLPlayback(ctx context.Context, req domain.BeamRequest
 		} else {
 			warnings = append(warnings, "transcode=always ignored for non-video URL source")
 		}
-	} else if mode == transcodeAuto && strings.Contains(mediaType, "video") {
-		warnings = append(warnings, "auto transcode for URL sources defaults to direct stream")
+	}
+	if !transcoding {
+		if closer := asCloser(preparedMedia); closer != nil {
+			_ = closer.Close()
+		}
+		return m.prepareDirectURLPlayback(device, sourceURL, mediaType, subtitlesPath, warnings)
 	}
 
 	listenAddr, server, err := m.newStreamServer(device.Address)
@@ -1106,6 +1117,45 @@ func (m *Manager) prepareURLPlayback(ctx context.Context, req domain.BeamRequest
 	}, nil
 }
 
+func (m *Manager) prepareDirectURLPlayback(device *domain.Device, sourceURL, mediaType, subtitlesPath string, warnings []string) (*preparedPlayback, error) {
+	playback := &preparedPlayback{
+		mediaURL:    sourceURL,
+		mediaType:   mediaType,
+		title:       mediaTitleFor(sourceURL),
+		subtitleURL: "",
+		live:        true,
+		warnings:    append([]string{}, warnings...),
+	}
+	if strings.TrimSpace(subtitlesPath) == "" {
+		return playback, nil
+	}
+
+	listenAddr, server, err := m.newStreamServer(device.Address)
+	if err != nil {
+		return nil, err
+	}
+
+	subtitleURL, subtitleWarnings, subtitleErr := m.addSubtitleSidecar(server, listenAddr, subtitlesPath, false)
+	if subtitleErr != nil {
+		cleanupPrepared(&preparedPlayback{httpServer: server})
+		return nil, subtitleErr
+	}
+	playback.warnings = append(playback.warnings, subtitleWarnings...)
+	if subtitleURL == "" {
+		cleanupPrepared(&preparedPlayback{httpServer: server})
+		return playback, nil
+	}
+
+	if err := startStreamServer(server); err != nil {
+		cleanupPrepared(&preparedPlayback{httpServer: server})
+		return nil, toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to start subtitle server: %v", err))
+	}
+
+	playback.subtitleURL = subtitleURL
+	playback.httpServer = server
+	return playback, nil
+}
+
 func (m *Manager) prepareDLNAFilePlayback(ctx context.Context, req domain.BeamRequest, device *domain.Device, mode string) (*preparedDLNA, error) {
 	source, err := m.validateLocalFilePath(req.Source, "source")
 	if err != nil {
@@ -1148,26 +1198,6 @@ func (m *Manager) prepareDLNAURLPlayback(ctx context.Context, req domain.BeamReq
 		return nil, err
 	}
 
-	warnings := []string{}
-	if mode != transcodeAlways {
-		directCtx := ctx
-		directCancel := func() {}
-		if m.dlnaDirectURLAttemptTimeout > 0 {
-			directCtx, directCancel = context.WithTimeout(ctx, m.dlnaDirectURLAttemptTimeout)
-		}
-		defer directCancel()
-
-		directType := detectURLMediaType(sourceURL)
-		direct, directErr := m.startDLNAServerAndPlay(directCtx, device, []byte("dlna-direct-url-placeholder"), directType, sourceURL, subtitlesPath, false, "", startSeconds(req.StartSeconds), sourceURL)
-		if directErr == nil {
-			direct.title = mediaTitleFor(sourceURL)
-			direct.contentType = directType
-			direct.warnings = append(direct.warnings, warnings...)
-			return direct, nil
-		}
-		warnings = append(warnings, "direct DLNA URL playback failed; falling back to local proxy")
-	}
-
 	var preparedMedia any
 	var mediaType string
 	err = m.withRetry(ctx, func() error {
@@ -1193,7 +1223,6 @@ func (m *Manager) prepareDLNAURLPlayback(ctx context.Context, req domain.BeamReq
 		}
 		return nil, err
 	}
-	warnings = append(warnings, tcWarnings...)
 
 	prepared, err := m.startDLNAServerAndPlay(ctx, device, preparedMedia, mediaType, sourceURL, subtitlesPath, transcoding, ffmpegPath, startSeconds(req.StartSeconds), "")
 	if err != nil {
@@ -1204,7 +1233,7 @@ func (m *Manager) prepareDLNAURLPlayback(ctx context.Context, req domain.BeamReq
 	}
 	prepared.title = mediaTitleFor(sourceURL)
 	prepared.contentType = mediaType
-	prepared.warnings = append(prepared.warnings, warnings...)
+	prepared.warnings = append(prepared.warnings, tcWarnings...)
 	prepared.sourceCloser = asCloser(preparedMedia)
 	return prepared, nil
 }
