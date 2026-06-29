@@ -294,6 +294,7 @@ type fakeDLNAPayload struct {
 	ctx             context.Context
 
 	blockPlayUntilContextDone bool
+	failStopIfContextDone     bool
 }
 
 func (f *fakeDLNAPayload) SendtoTV(action string) error {
@@ -310,6 +311,13 @@ func (f *fakeDLNAPayload) SendtoTV(action string) error {
 		}
 		<-ctx.Done()
 		return ctx.Err()
+	}
+	if f.failStopIfContextDone && action == "Stop" && ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 	}
 
 	if actionErr != nil {
@@ -2445,6 +2453,37 @@ func TestBeamMediaDLNAFileAndStopWithHybridMonitor(t *testing.T) {
 	}
 	if !serverFactory.servers[0].stopCalled {
 		t.Fatal("expected DLNA server stop")
+	}
+}
+
+func TestShutdownSessionStopsDLNABeforeCancelingMonitorContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	payload := &fakeDLNAPayload{
+		listenAddr:            "127.0.0.1:3512",
+		failStopIfContextDone: true,
+	}
+	payload.SetContext(ctx)
+
+	sess := &session{
+		ID:            "sess_dlna_stop_order",
+		DeviceID:      "dlna_stop_order",
+		DeviceName:    "Living Room TV",
+		Protocol:      "dlna",
+		dlnaPayload:   payload,
+		monitorCancel: cancel,
+	}
+
+	if err := shutdownSession(sess, true); err != nil {
+		t.Fatalf("shutdown session: %v", err)
+	}
+	if payload.actionCount("Stop") != 1 {
+		t.Fatalf("expected Stop exactly once, got %d", payload.actionCount("Stop"))
+	}
+
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expected monitor context to be canceled after Stop")
 	}
 }
 

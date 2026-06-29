@@ -2298,16 +2298,6 @@ func shutdownSession(sess *session, stopMedia bool) error {
 
 	var shutdownErr error
 	sess.closeOnce.Do(func() {
-		if sess.monitorCancel != nil {
-			sess.monitorCancel()
-		}
-		if sess.monitorDone != nil {
-			select {
-			case <-sess.monitorDone:
-			case <-time.After(dlnaMonitorStopWait):
-			}
-		}
-
 		var errs []string
 		if sess.castClient != nil {
 			if stopMedia {
@@ -2322,6 +2312,15 @@ func shutdownSession(sess *session, stopMedia bool) error {
 		if sess.dlnaPayload != nil && stopMedia {
 			if err := sess.dlnaPayload.SendtoTV("Stop"); err != nil {
 				errs = append(errs, fmt.Sprintf("stop: %v", err))
+			}
+		}
+		if sess.monitorCancel != nil {
+			sess.monitorCancel()
+		}
+		if sess.monitorDone != nil {
+			select {
+			case <-sess.monitorDone:
+			case <-time.After(dlnaMonitorStopWait):
 			}
 		}
 		if sess.httpServer != nil {
