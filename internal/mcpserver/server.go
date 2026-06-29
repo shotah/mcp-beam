@@ -977,7 +977,7 @@ func staticTools() []tool {
 		},
 		{
 			Name:        "seek_beaming",
-			Description: "Seek active playback by absolute seconds, percentage, from-end offset, or relative delta on a selected device or session. Provide exactly one seek mode field.",
+			Description: "Seek active playback on a selected device or session. Provide session_id or target_device, and exactly one seek mode field. For skip or rewind, use delta_seconds. For an exact timestamp from the beginning, use position_seconds.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -992,24 +992,25 @@ func staticTools() []tool {
 					"position_seconds": map[string]any{
 						"type":        "integer",
 						"minimum":     0,
-						"description": "Absolute seek target in seconds from start of media.",
+						"description": "Absolute seek target in whole seconds from the start of media. Example: use 120 to seek to 2:00.",
 					},
 					"position_percent": map[string]any{
 						"type":        "number",
 						"minimum":     0,
 						"maximum":     100,
-						"description": "Relative seek target as percentage of total duration (0-100).",
+						"description": "Seek target as a percentage of total duration (0-100). Example: use 50 for the middle of the media.",
 					},
 					"from_end_seconds": map[string]any{
 						"type":        "integer",
 						"minimum":     0,
-						"description": "Relative seek target measured from the media end in seconds.",
+						"description": "Seek target measured backward from the media end in whole seconds. Example: use 10 to seek to ten seconds before the end.",
 					},
 					"delta_seconds": map[string]any{
 						"type":        "integer",
-						"description": "Relative seek delta from current playback position in seconds (use negative values to rewind).",
+						"description": "Relative seek delta from the current playback position in whole seconds. Example: use 30 to skip ahead or -10 to rewind.",
 					},
 				},
+				"minProperties":        2,
 				"additionalProperties": false,
 			},
 		},
