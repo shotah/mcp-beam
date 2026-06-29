@@ -35,6 +35,7 @@ type CastFactory interface {
 // DLNAPayload represents a DLNA control channel.
 type DLNAPayload interface {
 	SendtoTV(action string) error
+	StopPlayback() error
 	SeekSoapCall(reltime string) error
 	GetTransportInfo() ([]string, error)
 	GetPositionInfo() ([]string, error)

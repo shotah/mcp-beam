@@ -287,6 +287,8 @@ type fakeDLNAPayload struct {
 	transportErr       error
 	positionResponse   []string
 	positionErr        error
+	stopPlaybackErr    error
+	stopPlaybackCalls  int
 	seekErr            error
 	seekRelTime        string
 
@@ -326,6 +328,13 @@ func (f *fakeDLNAPayload) SendtoTV(action string) error {
 		}
 	}
 	return nil
+}
+
+func (f *fakeDLNAPayload) StopPlayback() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopPlaybackCalls++
+	return f.stopPlaybackErr
 }
 
 func (f *fakeDLNAPayload) GetTransportInfo() ([]string, error) {
@@ -521,6 +530,84 @@ func TestBeamMediaFileAndStop(t *testing.T) {
 	}
 	if len(serverFactory.servers) == 0 || !serverFactory.servers[0].stopCalled {
 		t.Fatal("expected media server to be stopped")
+	}
+}
+
+func TestStopBeamingSucceedsWithChromecastCloseWarning(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	client := &fakeCastClient{closeErr: errors.New("unsubscribe failed")}
+	sess := &session{
+		ID:         "sess_close_warning",
+		DeviceID:   "dev_close_warning",
+		DeviceName: "Living Room",
+		Protocol:   "chromecast",
+		castClient: client,
+	}
+	manager.initializeSessionLifecycle(sess, "playing", "")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	result, err := manager.StopBeaming(context.Background(), domain.StopRequest{SessionID: sess.ID})
+	if err != nil {
+		t.Fatalf("stop beaming: %v", err)
+	}
+	if !result.OK {
+		t.Fatal("expected stop OK=true")
+	}
+	if client.stopCalls != 1 {
+		t.Fatalf("expected stop to be called once, got %d", client.stopCalls)
+	}
+	if client.closeCalls != 1 {
+		t.Fatalf("expected close to be called once, got %d", client.closeCalls)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "unsubscribe failed") {
+		t.Fatalf("expected close warning, got %#v", result.Warnings)
+	}
+
+	manager.mu.Lock()
+	_, found := manager.sessionsByID[sess.ID]
+	manager.mu.Unlock()
+	if found {
+		t.Fatal("expected stopped session to be detached")
+	}
+}
+
+func TestStopBeamingFallsBackWhenDLNAUnsubscribeFails(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	payload := &fakeDLNAPayload{
+		listenAddr: "127.0.0.1:3514",
+		actionErr: map[string]error{
+			"Stop": errors.New("SendtoTV unsubscribe call error: unsubscribe failed"),
+		},
+	}
+	sess := &session{
+		ID:          "sess_dlna_unsubscribe",
+		DeviceID:    "dev_dlna_unsubscribe",
+		DeviceName:  "Living Room TV",
+		Protocol:    "dlna",
+		dlnaPayload: payload,
+	}
+	manager.initializeSessionLifecycle(sess, "playing", "")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	result, err := manager.StopBeaming(context.Background(), domain.StopRequest{SessionID: sess.ID})
+	if err != nil {
+		t.Fatalf("stop beaming: %v", err)
+	}
+	if !result.OK {
+		t.Fatal("expected stop OK=true")
+	}
+	if payload.actionCount("Stop") != 1 {
+		t.Fatalf("expected SendtoTV Stop exactly once, got %d", payload.actionCount("Stop"))
+	}
+	if payload.stopPlaybackCalls != 1 {
+		t.Fatalf("expected fallback stop once, got %d", payload.stopPlaybackCalls)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "unsubscribe failed") {
+		t.Fatalf("expected unsubscribe warning, got %#v", result.Warnings)
 	}
 }
 

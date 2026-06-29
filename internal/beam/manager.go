@@ -277,7 +277,8 @@ func (m *Manager) StopBeaming(_ context.Context, req domain.StopRequest) (*domai
 		return nil, toolError("DEVICE_NOT_FOUND", "no active session matches the provided target")
 	}
 
-	if err := shutdownSession(sess, true); err != nil {
+	shutdown := shutdownSessionWithReport(sess, true)
+	if err := shutdown.stopErr(); err != nil {
 		return nil, toolError("PROTOCOL_ERROR", err.Error())
 	}
 
@@ -285,6 +286,7 @@ func (m *Manager) StopBeaming(_ context.Context, req domain.StopRequest) (*domai
 		OK:               true,
 		StoppedSessionID: sess.ID,
 		DeviceID:         sess.DeviceID,
+		Warnings:         shutdown.warnings(),
 	}, nil
 }
 
@@ -2292,26 +2294,60 @@ func (m *Manager) isClosed() bool {
 }
 
 func shutdownSession(sess *session, stopMedia bool) error {
-	if sess == nil {
+	return shutdownSessionWithReport(sess, stopMedia).err()
+}
+
+type sessionShutdownReport struct {
+	stopErrors      []string
+	cleanupWarnings []string
+}
+
+func (r sessionShutdownReport) err() error {
+	errs := make([]string, 0, len(r.stopErrors)+len(r.cleanupWarnings))
+	errs = append(errs, r.stopErrors...)
+	errs = append(errs, r.cleanupWarnings...)
+	if len(errs) == 0 {
 		return nil
 	}
+	return errors.New(strings.Join(errs, "; "))
+}
 
-	var shutdownErr error
+func (r sessionShutdownReport) stopErr() error {
+	if len(r.stopErrors) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(r.stopErrors, "; "))
+}
+
+func (r sessionShutdownReport) warnings() []string {
+	if len(r.cleanupWarnings) == 0 {
+		return nil
+	}
+	return append([]string{}, r.cleanupWarnings...)
+}
+
+func shutdownSessionWithReport(sess *session, stopMedia bool) sessionShutdownReport {
+	var report sessionShutdownReport
+	if sess == nil {
+		return report
+	}
+
 	sess.closeOnce.Do(func() {
-		var errs []string
 		if sess.castClient != nil {
 			if stopMedia {
 				if err := sess.castClient.Stop(); err != nil {
-					errs = append(errs, fmt.Sprintf("stop: %v", err))
+					report.stopErrors = append(report.stopErrors, fmt.Sprintf("stop: %v", err))
 				}
 			}
 			if err := sess.castClient.Close(true); err != nil {
-				errs = append(errs, fmt.Sprintf("close: %v", err))
+				report.cleanupWarnings = append(report.cleanupWarnings, fmt.Sprintf("close: %v", err))
 			}
 		}
 		if sess.dlnaPayload != nil && stopMedia {
-			if err := sess.dlnaPayload.SendtoTV("Stop"); err != nil {
-				errs = append(errs, fmt.Sprintf("stop: %v", err))
+			if warning, err := stopDLNAPayload(sess.dlnaPayload); err != nil {
+				report.stopErrors = append(report.stopErrors, fmt.Sprintf("stop: %v", err))
+			} else if warning != "" {
+				report.cleanupWarnings = append(report.cleanupWarnings, warning)
 			}
 		}
 		if sess.monitorCancel != nil {
@@ -2329,12 +2365,33 @@ func shutdownSession(sess *session, stopMedia bool) error {
 		if sess.sourceCloser != nil {
 			_ = sess.sourceCloser.Close()
 		}
-
-		if len(errs) > 0 {
-			shutdownErr = errors.New(strings.Join(errs, "; "))
-		}
 	})
-	return shutdownErr
+	return report
+}
+
+func stopDLNAPayload(payload adapters.DLNAPayload) (string, error) {
+	if payload == nil {
+		return "", nil
+	}
+
+	err := payload.SendtoTV("Stop")
+	if err == nil {
+		return "", nil
+	}
+	if !isDLNAUnsubscribeError(err) {
+		return "", err
+	}
+	if stopErr := payload.StopPlayback(); stopErr != nil {
+		return "", fmt.Errorf("%v; fallback stop after unsubscribe cleanup failure: %w", err, stopErr)
+	}
+	return fmt.Sprintf("stop cleanup: %v", err), nil
+}
+
+func isDLNAUnsubscribeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "unsubscribe")
 }
 
 func cleanupPrepared(p *preparedPlayback) {

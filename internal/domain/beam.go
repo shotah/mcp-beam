@@ -23,9 +23,10 @@ type StopRequest struct {
 }
 
 type StopResult struct {
-	OK               bool   `json:"ok"`
-	StoppedSessionID string `json:"stopped_session_id"`
-	DeviceID         string `json:"device_id"`
+	OK               bool     `json:"ok"`
+	StoppedSessionID string   `json:"stopped_session_id"`
+	DeviceID         string   `json:"device_id"`
+	Warnings         []string `json:"warnings,omitempty"`
 }
 
 type PlaybackControlRequest struct {

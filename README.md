@@ -506,6 +506,7 @@ On success, `structuredContent` includes:
 - `ok`
 - `stopped_session_id`
 - `device_id`
+- `warnings` (optional cleanup warnings after playback stopped)
 
 ### `seek_beaming`
 

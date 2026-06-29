@@ -104,6 +104,10 @@ func (d *DLNAPayloadAdapter) SendtoTV(action string) error {
 	return d.payload.SendtoTV(action)
 }
 
+func (d *DLNAPayloadAdapter) StopPlayback() error {
+	return d.payload.PlayPauseStopSoapCall("Stop")
+}
+
 func (d *DLNAPayloadAdapter) SeekSoapCall(reltime string) error {
 	return d.payload.SeekSoapCall(reltime)
 }
