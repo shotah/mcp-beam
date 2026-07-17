@@ -2808,7 +2808,7 @@ func mediaTitleFor(source string) string {
 			return strings.TrimSpace(parsed.Host)
 		}
 	}
-	return strings.TrimSpace(filepath.Base(source))
+	return localPathBase(source)
 }
 
 func mediaExt(source string) string {
@@ -2821,11 +2821,22 @@ func mediaExt(source string) string {
 		}
 	}
 
-	ext := strings.ToLower(filepath.Ext(source))
+	ext := strings.ToLower(path.Ext(localPathBase(source)))
 	if isSafeExt(ext) {
 		return ext
 	}
 	return ""
+}
+
+// localPathBase returns the final path element for local file paths.
+// Normalizes Windows separators so Linux CI and Windows hosts agree.
+func localPathBase(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+	normalized := strings.ReplaceAll(source, "\\", "/")
+	return strings.TrimSpace(path.Base(normalized))
 }
 
 // isHTTPOrHTTPSSource reports whether source is an http(s) media URL.
@@ -2836,7 +2847,7 @@ func isHTTPOrHTTPSSource(source string) bool {
 	if source == "" {
 		return false
 	}
-	if filepath.IsAbs(source) {
+	if filepath.IsAbs(source) || looksLikeWindowsDrivePath(source) {
 		return false
 	}
 	parsed, err := url.Parse(source)
@@ -2845,6 +2856,22 @@ func isHTTPOrHTTPSSource(source string) bool {
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	return scheme == "http" || scheme == "https"
+}
+
+// looksLikeWindowsDrivePath detects `C:\...` / `C:/...` even when running on Unix,
+// where filepath.IsAbs does not treat drive letters as absolute.
+func looksLikeWindowsDrivePath(source string) bool {
+	if len(source) < 3 {
+		return false
+	}
+	drive := source[0]
+	if (drive < 'A' || drive > 'Z') && (drive < 'a' || drive > 'z') {
+		return false
+	}
+	if source[1] != ':' {
+		return false
+	}
+	return source[2] == '\\' || source[2] == '/'
 }
 
 func isSafeExt(ext string) bool {
