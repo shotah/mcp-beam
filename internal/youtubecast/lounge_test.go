@@ -52,8 +52,17 @@ func TestLoungeSessionPlayVideo(t *testing.T) {
 			if got := r.Header.Get(loungeIDHeader); got != "token-xyz" {
 				t.Errorf("missing lounge header, got %q", got)
 			}
+			if rid := r.URL.Query().Get("RID"); rid != "0" {
+				t.Errorf("first setPlaylist RID=%q, want 0", rid)
+			}
 			if !strings.Contains(string(body), "dQw4w9WgXcQ") {
 				t.Errorf("playlist body missing video id: %s", body)
+			}
+			if !strings.Contains(string(body), "req0__sc=setPlaylist") {
+				t.Errorf("playlist body missing prefixed command req0__sc: %s", body)
+			}
+			if strings.Contains(string(body), "__sc=setPlaylist") && !strings.Contains(string(body), "req0__sc=setPlaylist") {
+				t.Errorf("playlist used bare __sc without req prefix: %s", body)
 			}
 			if !strings.Contains(string(body), "req0_videoId") {
 				t.Errorf("playlist body missing req prefix: %s", body)

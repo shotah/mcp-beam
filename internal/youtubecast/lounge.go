@@ -147,15 +147,17 @@ func (s *LoungeSession) bind(ctx context.Context) error {
 	}
 	s.sid = sid[1]
 	s.gsessionID = gsession[1]
-	s.rid++
+	// Keep rid at 0 for the first session command (matches casttube/pychromecast).
 	return nil
 }
 
 func (s *LoungeSession) initializeQueue(ctx context.Context, videoID string, startSeconds int) error {
+	// casttube prefixes keys that start with "_" (including "__sc") with reqN.
+	// So the command field must be "req0__sc", not bare "__sc".
 	prefix := fmt.Sprintf("req%d", s.reqCount)
 	form := url.Values{
 		"count":                  {"1"},
-		"__sc":                   {actionSetPlaylist},
+		prefix + "__sc":          {actionSetPlaylist},
 		prefix + "_listId":       {""},
 		prefix + "_currentTime":  {strconv.Itoa(startSeconds)},
 		prefix + "_currentIndex": {"-1"},
