@@ -33,6 +33,7 @@ type LocalHardwareLister interface {
 
 type BeamController interface {
 	BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error)
+	BeamYouTubeVideo(ctx context.Context, req domain.YouTubeBeamRequest) (*domain.BeamResult, error)
 	StopBeaming(ctx context.Context, req domain.StopRequest) (*domain.StopResult, error)
 	PlayBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error)
 	PauseBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error)
@@ -210,6 +211,8 @@ func (s *Server) handleToolCall(ctx context.Context, id json.RawMessage, rawPara
 		return s.handleListLocalHardwareCall(ctx, id, params.Arguments)
 	case "beam_media":
 		return s.handleBeamMediaCall(ctx, id, params.Arguments)
+	case "beam_youtube_video":
+		return s.handleBeamYouTubeVideoCall(ctx, id, params.Arguments)
 	case "stop_beaming":
 		return s.handleStopBeamingCall(ctx, id, params.Arguments)
 	case "play_beaming":
@@ -350,6 +353,61 @@ func (s *Server) handleBeamMediaCall(ctx context.Context, id json.RawMessage, ra
 				{
 					Type: "text",
 					Text: fmt.Sprintf("Beam started on device %s (session %s).", result.DeviceID, result.SessionID),
+				},
+			},
+			StructuredContent: result,
+		},
+	})
+}
+
+func (s *Server) handleBeamYouTubeVideoCall(ctx context.Context, id json.RawMessage, rawArgs json.RawMessage) error {
+	startedAt := time.Now()
+
+	if s.beamController == nil {
+		return s.sendToolInternalError("beam_youtube_video", "", "", startedAt, id, "beam controller is not configured")
+	}
+
+	var args struct {
+		VideoID      string `json:"video_id"`
+		TargetDevice string `json:"target_device"`
+		StartSeconds *int   `json:"start_seconds,omitempty"`
+	}
+	if err := decodeStrict(rawArgs, &args); err != nil {
+		return s.sendInvalidParams("beam_youtube_video", "", "", startedAt, id)
+	}
+
+	args.VideoID = strings.TrimSpace(args.VideoID)
+	args.TargetDevice = strings.TrimSpace(args.TargetDevice)
+	if args.VideoID == "" || args.TargetDevice == "" {
+		return s.sendInvalidParams("beam_youtube_video", args.TargetDevice, "", startedAt, id)
+	}
+	if args.StartSeconds != nil && *args.StartSeconds < 0 {
+		return s.sendInvalidParams("beam_youtube_video", args.TargetDevice, "", startedAt, id)
+	}
+
+	result, err := s.beamController.BeamYouTubeVideo(ctx, domain.YouTubeBeamRequest{
+		VideoID:      args.VideoID,
+		TargetDevice: args.TargetDevice,
+		StartSeconds: args.StartSeconds,
+	})
+	if err != nil {
+		s.logCall("beam_youtube_video", args.TargetDevice, "", startedAt, toolErrorCode(err))
+		return s.send(response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result:  toolErrorResultFromError(err),
+		})
+	}
+	s.logCall("beam_youtube_video", result.DeviceID, result.SessionID, startedAt, "")
+
+	return s.send(response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: toolCallResult{
+			Content: []toolContent{
+				{
+					Type: "text",
+					Text: fmt.Sprintf("YouTube video %s started on device %s (session %s).", result.VideoID, result.DeviceID, result.SessionID),
 				},
 			},
 			StructuredContent: result,
@@ -1047,7 +1105,7 @@ func staticTools() []tool {
 		},
 		{
 			Name:        "beam_media",
-			Description: "Cast or stream media (video, audio, etc.) to a selected local Smart TV, Chromecast, or UPnP/DLNA device. You must provide a valid target_device ID or name.",
+			Description: "Cast or stream direct media (local files or http/https mp3/mp4/m3u8 URLs) to a Chromecast or DLNA/UPnP device. Do not pass YouTube watch URLs here — use beam_youtube_video with a video_id instead.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1076,6 +1134,31 @@ func staticTools() []tool {
 					},
 				},
 				"required":             []string{"source", "target_device"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name: "beam_youtube_video",
+			Description: "Cast a YouTube / YouTube Music videoId to a Chromecast or Nest speaker via the YouTube Cast receiver. " +
+				"Use this for videoId values from youtube-go-mcp (or similar). Do not beam music.youtube.com watch URLs with beam_media.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"video_id": map[string]any{
+						"type":        "string",
+						"description": "11-character YouTube video id (e.g. dQw4w9WgXcQ). Not a full URL.",
+					},
+					"target_device": map[string]any{
+						"type":        "string",
+						"description": "Chromecast/Nest device ID or exact name from list_local_hardware.",
+					},
+					"start_seconds": map[string]any{
+						"type":        "integer",
+						"minimum":     0,
+						"description": "Optional start offset in seconds.",
+					},
+				},
+				"required":             []string{"video_id", "target_device"},
 				"additionalProperties": false,
 			},
 		},

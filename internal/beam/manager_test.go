@@ -3216,9 +3216,130 @@ func containsWarning(warnings []string, needle string) bool {
 	return false
 }
 
+type fakeYouTubeFactory struct {
+	client *fakeYouTubeClient
+	err    error
+}
+
+func (f *fakeYouTubeFactory) NewYouTubeClient(deviceAddr string) (adapters.YouTubeClient, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.client == nil {
+		f.client = &fakeYouTubeClient{}
+	}
+	f.client.deviceAddr = deviceAddr
+	return f.client, nil
+}
+
+type fakeYouTubeClient struct {
+	deviceAddr    string
+	connectErr   error
+	playErr      error
+	videoID      string
+	startSeconds int
+	connectCalls int
+	playCalls    int
+	closeCalls   int
+	stopCalls    int
+}
+
+func (f *fakeYouTubeClient) Connect() error {
+	f.connectCalls++
+	return f.connectErr
+}
+
+func (f *fakeYouTubeClient) PlayVideo(ctx context.Context, videoID string, startSeconds int) error {
+	f.playCalls++
+	f.videoID = videoID
+	f.startSeconds = startSeconds
+	return f.playErr
+}
+
+func (f *fakeYouTubeClient) Play() error                   { return nil }
+func (f *fakeYouTubeClient) Pause() error                  { return nil }
+func (f *fakeYouTubeClient) Seek(seconds int) error        { return nil }
+func (f *fakeYouTubeClient) Stop() error                   { f.stopCalls++; return nil }
+func (f *fakeYouTubeClient) SetVolume(level float32) error { return nil }
+func (f *fakeYouTubeClient) SetMuted(muted bool) error     { return nil }
+func (f *fakeYouTubeClient) GetStatus() (*castprotocol.CastStatus, error) {
+	return &castprotocol.CastStatus{PlayerState: "PLAYING"}, nil
+}
+func (f *fakeYouTubeClient) Close(stopMedia bool) error { f.closeCalls++; return nil }
+
+func TestBeamYouTubeVideo(t *testing.T) {
+	discovery := &fakeDiscovery{devices: []domain.Device{{
+		ID:       "nest_1",
+		Name:     "Kitchen Nest",
+		Protocol: "chromecast",
+		Address:  "http://192.168.1.50:8009",
+	}}}
+	yt := &fakeYouTubeClient{}
+	manager := NewManager(discovery, nil, nil).WithYouTubeFactory(&fakeYouTubeFactory{client: yt})
+	defer manager.Close(context.Background())
+
+	start := 9
+	result, err := manager.BeamYouTubeVideo(context.Background(), domain.YouTubeBeamRequest{
+		VideoID:      "dQw4w9WgXcQ",
+		TargetDevice: "nest_1",
+		StartSeconds: &start,
+	})
+	if err != nil {
+		t.Fatalf("BeamYouTubeVideo: %v", err)
+	}
+	if !result.OK || result.VideoID != "dQw4w9WgXcQ" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if result.MediaURL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
+		t.Fatalf("unexpected media url: %s", result.MediaURL)
+	}
+	if yt.connectCalls != 1 || yt.playCalls != 1 || yt.videoID != "dQw4w9WgXcQ" || yt.startSeconds != 9 {
+		t.Fatalf("unexpected youtube client calls: %#v", yt)
+	}
+}
+
+func TestBeamYouTubeVideoRejectsDLNA(t *testing.T) {
+	discovery := &fakeDiscovery{devices: []domain.Device{{
+		ID:       "tv_1",
+		Name:     "Living Room TV",
+		Protocol: "dlna",
+		Address:  "http://192.168.1.60:9197",
+	}}}
+	manager := NewManager(discovery, nil, nil).WithYouTubeFactory(&fakeYouTubeFactory{client: &fakeYouTubeClient{}})
+	defer manager.Close(context.Background())
+
+	_, err := manager.BeamYouTubeVideo(context.Background(), domain.YouTubeBeamRequest{
+		VideoID:      "dQw4w9WgXcQ",
+		TargetDevice: "tv_1",
+	})
+	if err == nil {
+		t.Fatal("expected error for DLNA target")
+	}
+	var toolErr *domain.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "UNSUPPORTED_SOURCE_FOR_PROTOCOL" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBeamYouTubeVideoRejectsInvalidVideoID(t *testing.T) {
+	manager := NewManager(&fakeDiscovery{}, nil, nil).WithYouTubeFactory(&fakeYouTubeFactory{})
+	defer manager.Close(context.Background())
+
+	_, err := manager.BeamYouTubeVideo(context.Background(), domain.YouTubeBeamRequest{
+		VideoID:      "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+		TargetDevice: "nest_1",
+	})
+	if err == nil {
+		t.Fatal("expected invalid video id error")
+	}
+}
+
 var (
-	_ adapters.CastClient  = (*fakeCastClient)(nil)
-	_ adapters.CastFactory = (*fakeCastFactory)(nil)
-	_ adapters.DLNAFactory = (*fakeDLNAFactory)(nil)
-	_ adapters.DLNAPayload = (*fakeDLNAPayload)(nil)
+	_ adapters.CastClient     = (*fakeCastClient)(nil)
+	_ adapters.CastFactory    = (*fakeCastFactory)(nil)
+	_ adapters.YouTubeClient  = (*fakeYouTubeClient)(nil)
+	_ adapters.YouTubeFactory = (*fakeYouTubeFactory)(nil)
+	_ adapters.DLNAFactory    = (*fakeDLNAFactory)(nil)
+	_ adapters.DLNAPayload    = (*fakeDLNAPayload)(nil)
+	_ adapters.CastClient     = (*youtubeCastSessionClient)(nil)
 )

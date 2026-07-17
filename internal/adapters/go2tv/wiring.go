@@ -7,20 +7,23 @@ import (
 	"go2tv.app/go2tv/v2/devices"
 	"go2tv.app/go2tv/v2/soapcalls"
 	"go2tv.app/mcp-beam/internal/adapters"
+	"go2tv.app/mcp-beam/internal/youtubecast"
 )
 
 // Bundle wires all external go2tv-backed adapters in one place.
 type Bundle struct {
-	Discovery   adapters.Discovery
-	CastFactory adapters.CastFactory
-	DLNAFactory adapters.DLNAFactory
+	Discovery      adapters.Discovery
+	CastFactory    adapters.CastFactory
+	YouTubeFactory adapters.YouTubeFactory
+	DLNAFactory    adapters.DLNAFactory
 }
 
 func NewBundle() Bundle {
 	return Bundle{
-		Discovery:   DiscoveryAdapter{},
-		CastFactory: CastFactory{},
-		DLNAFactory: DLNAFactory{},
+		Discovery:      DiscoveryAdapter{},
+		CastFactory:    CastFactory{},
+		YouTubeFactory: YouTubeFactory{},
+		DLNAFactory:    DLNAFactory{},
 	}
 }
 
@@ -91,6 +94,12 @@ func (c *CastClientAdapter) GetStatus() (*castprotocol.CastStatus, error) {
 
 func (c *CastClientAdapter) Close(stopMedia bool) error {
 	return c.client.Close(stopMedia)
+}
+
+type YouTubeFactory struct{}
+
+func (YouTubeFactory) NewYouTubeClient(deviceAddr string) (adapters.YouTubeClient, error) {
+	return youtubecast.NewClient(deviceAddr)
 }
 
 type DLNAFactory struct{}
@@ -165,7 +174,9 @@ func (d *DLNAPayloadAdapter) RawPayload() *soapcalls.TVPayload {
 }
 
 var (
-	_ adapters.Discovery   = DiscoveryAdapter{}
-	_ adapters.CastFactory = CastFactory{}
-	_ adapters.DLNAFactory = DLNAFactory{}
+	_ adapters.Discovery      = DiscoveryAdapter{}
+	_ adapters.CastFactory    = CastFactory{}
+	_ adapters.YouTubeFactory = YouTubeFactory{}
+	_ adapters.DLNAFactory    = DLNAFactory{}
+	_ adapters.YouTubeClient  = (*youtubecast.Client)(nil)
 )

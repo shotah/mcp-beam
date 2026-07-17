@@ -26,6 +26,7 @@ import (
 	"go2tv.app/go2tv/v2/utils"
 	"go2tv.app/mcp-beam/internal/adapters"
 	"go2tv.app/mcp-beam/internal/domain"
+	"go2tv.app/mcp-beam/internal/youtubecast"
 )
 
 const (
@@ -83,6 +84,7 @@ func (go2TVStreamServerFactory) New(addr string) streamServer {
 type Manager struct {
 	discovery              deviceLister
 	castFactory            adapters.CastFactory
+	youtubeFactory         adapters.YouTubeFactory
 	dlnaFactory            adapters.DLNAFactory
 	serverFactory          streamServerFactory
 	lookPath               func(file string) (string, error)
@@ -229,6 +231,14 @@ func NewManager(discovery deviceLister, castFactory adapters.CastFactory, dlnaFa
 	return manager
 }
 
+// WithYouTubeFactory configures cast-by-video-ID support (YouTube Cast receiver).
+func (m *Manager) WithYouTubeFactory(factory adapters.YouTubeFactory) *Manager {
+	if m != nil {
+		m.youtubeFactory = factory
+	}
+	return m
+}
+
 func (m *Manager) BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error) {
 	if m.discovery == nil {
 		return nil, toolError("INTERNAL_ERROR", "beam manager is not configured")
@@ -266,6 +276,139 @@ func (m *Manager) BeamMedia(ctx context.Context, req domain.BeamRequest) (*domai
 		return nil, unsupportedProtocolError(device.Protocol)
 	}
 }
+
+// BeamYouTubeVideo casts a YouTube videoId via the YouTube Cast app + lounge API.
+// Chromecast / Nest only — DLNA cannot host the YouTube receiver.
+func (m *Manager) BeamYouTubeVideo(ctx context.Context, req domain.YouTubeBeamRequest) (*domain.BeamResult, error) {
+	if m.discovery == nil {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is not configured")
+	}
+	if m.isClosed() {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	if m.youtubeFactory == nil {
+		return nil, toolError("INTERNAL_ERROR", "YouTube cast adapter is not configured")
+	}
+
+	videoID := strings.TrimSpace(req.VideoID)
+	if !youtubecast.ValidVideoID(videoID) {
+		return nil, toolError("INVALID_PARAMS", "video_id must be an 11-character YouTube video id")
+	}
+	startSeconds := 0
+	if req.StartSeconds != nil {
+		if *req.StartSeconds < 0 {
+			return nil, toolError("INVALID_PARAMS", "start_seconds must be >= 0")
+		}
+		startSeconds = *req.StartSeconds
+	}
+
+	beamCtx := ctx
+	cancel := func() {}
+	if m.beamOperationTimeout > 0 {
+		beamCtx, cancel = context.WithTimeout(ctx, m.beamOperationTimeout)
+	}
+	defer cancel()
+
+	device, err := m.resolveDevice(beamCtx, req.TargetDevice)
+	if err != nil {
+		return nil, err
+	}
+	if device.Protocol != "chromecast" {
+		return nil, youtubeProtocolUnsupportedError(device.Protocol)
+	}
+
+	client, err := m.youtubeFactory.NewYouTubeClient(device.Address)
+	if err != nil {
+		return nil, toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to create YouTube cast client: %v", err))
+	}
+	if err := m.withRetry(beamCtx, func() error {
+		return client.Connect()
+	}); err != nil {
+		_ = client.Close(true)
+		return nil, toolError("DEVICE_UNREACHABLE", fmt.Sprintf("failed to connect to Chromecast device: %v", err))
+	}
+
+	if err := client.PlayVideo(beamCtx, videoID, startSeconds); err != nil {
+		_ = client.Close(true)
+		return nil, toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to start YouTube playback: %v", err))
+	}
+
+	mediaURL := youtubecast.WatchURL(videoID)
+	sess := &session{
+		ID:         newSessionID(),
+		DeviceID:   device.ID,
+		DeviceName: device.Name,
+		MediaURL:   mediaURL,
+		Title:      videoID,
+		ContentType: "youtube/video",
+		Protocol:   "chromecast",
+		castClient: &youtubeCastSessionClient{client: client},
+		Warnings: []string{
+			"Cast via YouTube receiver (videoId). Play/pause/seek may be limited compared with beam_media.",
+		},
+	}
+	m.initializeSessionLifecycle(sess, "playing", "")
+	replaced, stored := m.storeSession(sess)
+	if !stored {
+		_ = shutdownSession(sess, true)
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	_ = shutdownSession(replaced, true)
+
+	return &domain.BeamResult{
+		OK:        true,
+		SessionID: sess.ID,
+		DeviceID:  sess.DeviceID,
+		MediaURL:  sess.MediaURL,
+		VideoID:   videoID,
+		Warnings:  append([]string{}, sess.Warnings...),
+	}, nil
+}
+
+func youtubeProtocolUnsupportedError(protocol string) *domain.ToolError {
+	p := strings.TrimSpace(protocol)
+	if p == "" {
+		p = "unknown"
+	}
+	return &domain.ToolError{
+		Code:    "UNSUPPORTED_SOURCE_FOR_PROTOCOL",
+		Message: fmt.Sprintf("beam_youtube_video requires a Chromecast/Nest target; got protocol %q", p),
+		Limitations: []domain.Limitation{{
+			Code:    "YOUTUBE_CAST_CHROMECAST_ONLY",
+			Message: "YouTube cast-by-video-ID uses the YouTube Cast app, which is Chromecast-only.",
+		}},
+		SuggestedFixes: []string{
+			"Run list_local_hardware and choose a Chromecast or Nest target.",
+			"For DLNA, use beam_media with a direct media URL instead.",
+		},
+		Details: map[string]any{
+			"protocol": p,
+		},
+	}
+}
+
+// youtubeCastSessionClient adapts YouTubeClient to CastClient for session controls.
+type youtubeCastSessionClient struct {
+	client adapters.YouTubeClient
+}
+
+func (c *youtubeCastSessionClient) Connect() error { return c.client.Connect() }
+func (c *youtubeCastSessionClient) Load(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
+	return fmt.Errorf("youtube session does not support Load")
+}
+func (c *youtubeCastSessionClient) LoadOnExisting(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
+	return fmt.Errorf("youtube session does not support LoadOnExisting")
+}
+func (c *youtubeCastSessionClient) Play() error                   { return c.client.Play() }
+func (c *youtubeCastSessionClient) Pause() error                  { return c.client.Pause() }
+func (c *youtubeCastSessionClient) Seek(seconds int) error        { return c.client.Seek(seconds) }
+func (c *youtubeCastSessionClient) Stop() error                   { return c.client.Stop() }
+func (c *youtubeCastSessionClient) SetVolume(level float32) error { return c.client.SetVolume(level) }
+func (c *youtubeCastSessionClient) SetMuted(muted bool) error     { return c.client.SetMuted(muted) }
+func (c *youtubeCastSessionClient) GetStatus() (*castprotocol.CastStatus, error) {
+	return c.client.GetStatus()
+}
+func (c *youtubeCastSessionClient) Close(stopMedia bool) error { return c.client.Close(stopMedia) }
 
 func (m *Manager) StopBeaming(_ context.Context, req domain.StopRequest) (*domain.StopResult, error) {
 	if req.SessionID == "" && req.TargetDevice == "" {

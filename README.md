@@ -14,6 +14,7 @@
 It exposes these tools:
 - `list_local_hardware`
 - `beam_media`
+- `beam_youtube_video`
 - `get_beaming_status`
 - `play_beaming`
 - `pause_beaming`
@@ -95,9 +96,11 @@ go run go2tv.app/mcp-beam@latest --self-test
 ### 3) Run the tool flow
 
 1. Call `list_local_hardware` and pick a device `id`.
-2. Call `beam_media` with `source` and `target_device`.
+2. Call `beam_media` with a direct media `source` (file/URL), **or** `beam_youtube_video` with a YouTube `video_id` (Chromecast/Nest).
 3. Call `get_beaming_status`, `play_beaming`, `pause_beaming`, `set_beaming_volume`, `mute_beaming`, or `seek_beaming` as needed.
 4. Call `stop_beaming` when done.
+
+Do **not** pass `https://music.youtube.com/watch?v=…` to `beam_media` — that is a web page, not a stream. Use `beam_youtube_video` with the bare `video_id` instead.
 
 Minimal example flow:
 
@@ -416,6 +419,35 @@ Protocol notes:
 - Chromecast supports local files and URL sources.
 - Chromecast supports direct `.m3u8` HLS URL casting.
 - DLNA supports local files and URL sources with direct-first then proxy fallback behavior.
+- YouTube / YouTube Music **watch URLs are not playable** via `beam_media` (Default Media Receiver needs a direct stream). Use `beam_youtube_video`.
+
+### `beam_youtube_video`
+
+Cast a YouTube `video_id` to a Chromecast or Nest device using the YouTube Cast receiver + lounge API (same path as pychromecast/casttube).
+
+Arguments:
+- `video_id` (required string): 11-character YouTube video id (not a URL)
+- `target_device` (required string): Chromecast/Nest device ID or exact name
+- `start_seconds` (optional integer, minimum `0`)
+
+Example:
+
+```json
+{
+  "name": "beam_youtube_video",
+  "arguments": {
+    "video_id": "dQw4w9WgXcQ",
+    "target_device": "dev_1234abcd",
+    "start_seconds": 0
+  }
+}
+```
+
+On success, `structuredContent` includes the usual beam fields plus `video_id`.
+
+Protocol notes:
+- Chromecast / Nest only.
+- Pair with a track source MCP such as [youtube-go-mcp](https://github.com/shotah/youtube-go-mcp) (`search_tracks` → `videoId` → `beam_youtube_video`).
 - DLNA `.m3u8` URLs are rejected with structured limitation details.
 - When `subtitles_path` is omitted for local files, mcp-beam auto-detects sidecar subtitles using the same basename (`.srt`, then `.vtt`).
 

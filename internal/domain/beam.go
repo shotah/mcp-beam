@@ -8,11 +8,20 @@ type BeamRequest struct {
 	StartSeconds  *int   `json:"start_seconds,omitempty"`
 }
 
+// YouTubeBeamRequest casts a YouTube videoId via the YouTube Cast receiver
+// (not Default Media Receiver + a watch URL).
+type YouTubeBeamRequest struct {
+	VideoID      string `json:"video_id"`
+	TargetDevice string `json:"target_device"`
+	StartSeconds *int   `json:"start_seconds,omitempty"`
+}
+
 type BeamResult struct {
 	OK          bool     `json:"ok"`
 	SessionID   string   `json:"session_id"`
 	DeviceID    string   `json:"device_id"`
 	MediaURL    string   `json:"media_url"`
+	VideoID     string   `json:"video_id,omitempty"`
 	Transcoding bool     `json:"transcoding"`
 	Warnings    []string `json:"warnings"`
 }
