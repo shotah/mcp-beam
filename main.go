@@ -95,7 +95,8 @@ func main() {
 		slog.String("log_level", logLevel.String()),
 	)
 	discoverySvc := discovery.NewService(bundle.Discovery, runCtx)
-	beamManager := beam.NewManager(discoverySvc, bundle.CastFactory, bundle.DLNAFactory)
+	beamManager := beam.NewManager(discoverySvc, bundle.CastFactory, bundle.DLNAFactory).
+		WithYouTubeFactory(bundle.YouTubeFactory)
 	srv := mcpserver.New(os.Stdin, os.Stdout, mcpserver.Config{
 		ServerName:          "mcp-beam",
 		ServerVersion:       buildinfo.Version,

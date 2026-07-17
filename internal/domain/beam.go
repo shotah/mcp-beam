@@ -8,11 +8,20 @@ type BeamRequest struct {
 	StartSeconds  *int   `json:"start_seconds,omitempty"`
 }
 
+// YouTubeBeamRequest casts a YouTube videoId via the YouTube Cast receiver
+// (not Default Media Receiver + a watch URL).
+type YouTubeBeamRequest struct {
+	VideoID      string `json:"video_id"`
+	TargetDevice string `json:"target_device"`
+	StartSeconds *int   `json:"start_seconds,omitempty"`
+}
+
 type BeamResult struct {
 	OK          bool     `json:"ok"`
 	SessionID   string   `json:"session_id"`
 	DeviceID    string   `json:"device_id"`
 	MediaURL    string   `json:"media_url"`
+	VideoID     string   `json:"video_id,omitempty"`
 	Transcoding bool     `json:"transcoding"`
 	Warnings    []string `json:"warnings"`
 }
@@ -39,6 +48,32 @@ type PlaybackControlResult struct {
 	SessionID string `json:"session_id"`
 	DeviceID  string `json:"device_id"`
 	State     string `json:"state"`
+}
+
+type VolumeRequest struct {
+	TargetDevice string `json:"target_device,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	Volume       int    `json:"volume"`
+}
+
+type VolumeResult struct {
+	OK        bool   `json:"ok"`
+	SessionID string `json:"session_id"`
+	DeviceID  string `json:"device_id"`
+	Volume    int    `json:"volume"`
+}
+
+type MuteRequest struct {
+	TargetDevice string `json:"target_device,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	Muted        bool   `json:"muted"`
+}
+
+type MuteResult struct {
+	OK        bool   `json:"ok"`
+	SessionID string `json:"session_id"`
+	DeviceID  string `json:"device_id"`
+	Muted     bool   `json:"muted"`
 }
 
 type SeekRequest struct {
@@ -74,6 +109,8 @@ type StatusResult struct {
 	State           string   `json:"state"`
 	PositionSeconds *float64 `json:"position_seconds,omitempty"`
 	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
+	Volume          *int     `json:"volume,omitempty"`
+	Muted           *bool    `json:"muted,omitempty"`
 	Title           string   `json:"title,omitempty"`
 	ContentType     string   `json:"content_type,omitempty"`
 	MediaURL        string   `json:"media_url,omitempty"`

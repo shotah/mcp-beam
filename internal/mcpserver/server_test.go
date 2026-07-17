@@ -28,28 +28,37 @@ type fakeLocalHardwareLister struct {
 }
 
 type fakeBeamController struct {
-	mu           sync.Mutex
-	beamReq      domain.BeamRequest
-	beamResult   *domain.BeamResult
-	beamErr      error
-	stopReq      domain.StopRequest
-	stopResult   *domain.StopResult
-	stopErr      error
-	playReq      domain.PlaybackControlRequest
-	playResult   *domain.PlaybackControlResult
-	playErr      error
-	pauseReq     domain.PlaybackControlRequest
-	pauseResult  *domain.PlaybackControlResult
-	pauseErr     error
-	seekReq      domain.SeekRequest
-	seekResult   *domain.SeekResult
-	seekErr      error
-	statusReq    domain.StatusRequest
-	statusResult *domain.StatusResult
-	statusErr    error
-	beamBlock    <-chan struct{}
-	beamCalled   chan struct{}
-	beamOnce     sync.Once
+	mu              sync.Mutex
+	beamReq         domain.BeamRequest
+	beamResult      *domain.BeamResult
+	beamErr         error
+	youtubeReq      domain.YouTubeBeamRequest
+	youtubeResult   *domain.BeamResult
+	youtubeErr      error
+	stopReq         domain.StopRequest
+	stopResult      *domain.StopResult
+	stopErr         error
+	playReq         domain.PlaybackControlRequest
+	playResult      *domain.PlaybackControlResult
+	playErr         error
+	pauseReq        domain.PlaybackControlRequest
+	pauseResult     *domain.PlaybackControlResult
+	pauseErr        error
+	volumeReq       domain.VolumeRequest
+	volumeResult    *domain.VolumeResult
+	volumeErr       error
+	muteReq         domain.MuteRequest
+	muteResult      *domain.MuteResult
+	muteErr         error
+	seekReq         domain.SeekRequest
+	seekResult      *domain.SeekResult
+	seekErr         error
+	statusReq       domain.StatusRequest
+	statusResult    *domain.StatusResult
+	statusErr       error
+	beamBlock       <-chan struct{}
+	beamCalled      chan struct{}
+	beamOnce        sync.Once
 }
 
 func (f *fakeBeamController) BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error) {
@@ -63,6 +72,13 @@ func (f *fakeBeamController) BeamMedia(ctx context.Context, req domain.BeamReque
 		<-f.beamBlock
 	}
 	return f.beamResult, f.beamErr
+}
+
+func (f *fakeBeamController) BeamYouTubeVideo(ctx context.Context, req domain.YouTubeBeamRequest) (*domain.BeamResult, error) {
+	f.mu.Lock()
+	f.youtubeReq = req
+	f.mu.Unlock()
+	return f.youtubeResult, f.youtubeErr
 }
 
 func (f *fakeBeamController) StopBeaming(ctx context.Context, req domain.StopRequest) (*domain.StopResult, error) {
@@ -84,6 +100,20 @@ func (f *fakeBeamController) PauseBeaming(ctx context.Context, req domain.Playba
 	f.pauseReq = req
 	f.mu.Unlock()
 	return f.pauseResult, f.pauseErr
+}
+
+func (f *fakeBeamController) SetVolumeBeaming(ctx context.Context, req domain.VolumeRequest) (*domain.VolumeResult, error) {
+	f.mu.Lock()
+	f.volumeReq = req
+	f.mu.Unlock()
+	return f.volumeResult, f.volumeErr
+}
+
+func (f *fakeBeamController) MuteBeaming(ctx context.Context, req domain.MuteRequest) (*domain.MuteResult, error) {
+	f.mu.Lock()
+	f.muteReq = req
+	f.mu.Unlock()
+	return f.muteResult, f.muteErr
 }
 
 func (f *fakeBeamController) SeekBeaming(ctx context.Context, req domain.SeekRequest) (*domain.SeekResult, error) {
@@ -150,8 +180,8 @@ func TestInitializeAndToolsList(t *testing.T) {
 
 	toolResult := responses[1]["result"].(map[string]any)
 	tools := toolResult["tools"].([]any)
-	if len(tools) != 7 {
-		t.Fatalf("expected 7 tools, got %d", len(tools))
+	if len(tools) != 10 {
+		t.Fatalf("expected 10 tools, got %d", len(tools))
 	}
 }
 
@@ -660,6 +690,61 @@ func TestToolsCallBeamMedia(t *testing.T) {
 	}
 	if controller.beamReq.StartSeconds == nil || *controller.beamReq.StartSeconds != 42 {
 		t.Fatalf("unexpected start_seconds forwarded: %#v", controller.beamReq.StartSeconds)
+	}
+}
+
+func TestToolsCallBeamYouTubeVideo(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	output := bytes.NewBuffer(nil)
+	controller := &fakeBeamController{
+		youtubeResult: &domain.BeamResult{
+			OK:        true,
+			SessionID: "sess_yt",
+			DeviceID:  "nest_1",
+			MediaURL:  "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+			VideoID:   "dQw4w9WgXcQ",
+		},
+	}
+
+	writeRequest(t, input, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      6,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "beam_youtube_video",
+			"arguments": map[string]any{
+				"video_id":      "dQw4w9WgXcQ",
+				"target_device": "nest_1",
+				"start_seconds": 15,
+			},
+		},
+	})
+
+	srv := New(input, output, Config{BeamController: controller})
+	if err := srv.Run(context.Background()); err != nil {
+		t.Fatalf("run server: %v", err)
+	}
+
+	responses := readResponses(t, output.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(responses))
+	}
+	result := responses[0]["result"].(map[string]any)
+	structured := result["structuredContent"].(map[string]any)
+	if structured["session_id"].(string) != "sess_yt" {
+		t.Fatalf("unexpected session_id: %v", structured["session_id"])
+	}
+	if structured["video_id"].(string) != "dQw4w9WgXcQ" {
+		t.Fatalf("unexpected video_id: %v", structured["video_id"])
+	}
+	if controller.youtubeReq.VideoID != "dQw4w9WgXcQ" {
+		t.Fatalf("unexpected video_id forwarded: %s", controller.youtubeReq.VideoID)
+	}
+	if controller.youtubeReq.TargetDevice != "nest_1" {
+		t.Fatalf("unexpected target forwarded: %s", controller.youtubeReq.TargetDevice)
+	}
+	if controller.youtubeReq.StartSeconds == nil || *controller.youtubeReq.StartSeconds != 15 {
+		t.Fatalf("unexpected start_seconds forwarded: %#v", controller.youtubeReq.StartSeconds)
 	}
 }
 
@@ -1201,6 +1286,126 @@ func TestToolsCallPauseBeaming(t *testing.T) {
 	}
 	if controller.pauseReq.TargetDevice != "dev_1" {
 		t.Fatalf("unexpected pause request target: %s", controller.pauseReq.TargetDevice)
+	}
+}
+
+func TestToolsCallSetBeamingVolume(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	output := bytes.NewBuffer(nil)
+	controller := &fakeBeamController{
+		volumeResult: &domain.VolumeResult{
+			OK:        true,
+			SessionID: "sess_vol_1",
+			DeviceID:  "dev_1",
+			Volume:    25,
+		},
+	}
+
+	writeRequest(t, input, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      92,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "set_beaming_volume",
+			"arguments": map[string]any{
+				"session_id": "sess_vol_1",
+				"volume":     25,
+			},
+		},
+	})
+
+	srv := New(input, output, Config{BeamController: controller})
+	if err := srv.Run(context.Background()); err != nil {
+		t.Fatalf("run server: %v", err)
+	}
+
+	responses := readResponses(t, output.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(responses))
+	}
+	result := responses[0]["result"].(map[string]any)
+	structured := result["structuredContent"].(map[string]any)
+	if int(structured["volume"].(float64)) != 25 {
+		t.Fatalf("unexpected volume: %v", structured["volume"])
+	}
+	if controller.volumeReq.SessionID != "sess_vol_1" || controller.volumeReq.Volume != 25 {
+		t.Fatalf("unexpected volume request: %#v", controller.volumeReq)
+	}
+}
+
+func TestToolsCallMuteBeaming(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	output := bytes.NewBuffer(nil)
+	controller := &fakeBeamController{
+		muteResult: &domain.MuteResult{
+			OK:        true,
+			SessionID: "sess_mute_1",
+			DeviceID:  "dev_1",
+			Muted:     true,
+		},
+	}
+
+	writeRequest(t, input, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      93,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "mute_beaming",
+			"arguments": map[string]any{
+				"target_device": "dev_1",
+				"muted":         true,
+			},
+		},
+	})
+
+	srv := New(input, output, Config{BeamController: controller})
+	if err := srv.Run(context.Background()); err != nil {
+		t.Fatalf("run server: %v", err)
+	}
+
+	responses := readResponses(t, output.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(responses))
+	}
+	result := responses[0]["result"].(map[string]any)
+	structured := result["structuredContent"].(map[string]any)
+	if structured["muted"] != true {
+		t.Fatalf("unexpected muted: %v", structured["muted"])
+	}
+	if controller.muteReq.TargetDevice != "dev_1" || !controller.muteReq.Muted {
+		t.Fatalf("unexpected mute request: %#v", controller.muteReq)
+	}
+}
+
+func TestToolsCallSetBeamingVolumeInvalidParams(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	output := bytes.NewBuffer(nil)
+	srv := New(input, output, Config{BeamController: &fakeBeamController{}})
+
+	writeRequest(t, input, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      94,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "set_beaming_volume",
+			"arguments": map[string]any{
+				"session_id": "sess_vol_1",
+				"volume":     150,
+			},
+		},
+	})
+
+	if err := srv.Run(context.Background()); err != nil {
+		t.Fatalf("run server: %v", err)
+	}
+
+	responses := readResponses(t, output.Bytes())
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(responses))
+	}
+	errObj := responses[0]["error"].(map[string]any)
+	if errObj["code"].(float64) != -32602 {
+		t.Fatalf("expected -32602, got %v", errObj["code"])
 	}
 }
 

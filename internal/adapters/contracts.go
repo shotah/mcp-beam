@@ -23,6 +23,8 @@ type CastClient interface {
 	Pause() error
 	Seek(seconds int) error
 	Stop() error
+	SetVolume(level float32) error
+	SetMuted(muted bool) error
 	GetStatus() (*castprotocol.CastStatus, error)
 	Close(stopMedia bool) error
 }
@@ -32,6 +34,25 @@ type CastFactory interface {
 	NewCastClient(deviceAddr string) (CastClient, error)
 }
 
+// YouTubeClient casts by YouTube videoId using the YouTube Cast app + lounge API.
+type YouTubeClient interface {
+	Connect() error
+	PlayVideo(ctx context.Context, videoID string, startSeconds int) error
+	Play() error
+	Pause() error
+	Seek(seconds int) error
+	Stop() error
+	SetVolume(level float32) error
+	SetMuted(muted bool) error
+	GetStatus() (*castprotocol.CastStatus, error)
+	Close(stopMedia bool) error
+}
+
+// YouTubeFactory creates YouTubeClient instances.
+type YouTubeFactory interface {
+	NewYouTubeClient(deviceAddr string) (YouTubeClient, error)
+}
+
 // DLNAPayload represents a DLNA control channel.
 type DLNAPayload interface {
 	SendtoTV(action string) error
@@ -39,6 +60,10 @@ type DLNAPayload interface {
 	SeekSoapCall(reltime string) error
 	GetTransportInfo() ([]string, error)
 	GetPositionInfo() ([]string, error)
+	GetVolumeSoapCall() (int, error)
+	SetVolumeSoapCall(v string) error
+	GetMuteSoapCall() (string, error)
+	SetMuteSoapCall(number string) error
 	ListenAddress() string
 	SetContext(ctx context.Context)
 	MediaURL() string

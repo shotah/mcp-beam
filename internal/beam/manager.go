@@ -26,6 +26,7 @@ import (
 	"go2tv.app/go2tv/v2/utils"
 	"go2tv.app/mcp-beam/internal/adapters"
 	"go2tv.app/mcp-beam/internal/domain"
+	"go2tv.app/mcp-beam/internal/youtubecast"
 )
 
 const (
@@ -83,6 +84,7 @@ func (go2TVStreamServerFactory) New(addr string) streamServer {
 type Manager struct {
 	discovery              deviceLister
 	castFactory            adapters.CastFactory
+	youtubeFactory         adapters.YouTubeFactory
 	dlnaFactory            adapters.DLNAFactory
 	serverFactory          streamServerFactory
 	lookPath               func(file string) (string, error)
@@ -229,6 +231,14 @@ func NewManager(discovery deviceLister, castFactory adapters.CastFactory, dlnaFa
 	return manager
 }
 
+// WithYouTubeFactory configures cast-by-video-ID support (YouTube Cast receiver).
+func (m *Manager) WithYouTubeFactory(factory adapters.YouTubeFactory) *Manager {
+	if m != nil {
+		m.youtubeFactory = factory
+	}
+	return m
+}
+
 func (m *Manager) BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error) {
 	if m.discovery == nil {
 		return nil, toolError("INTERNAL_ERROR", "beam manager is not configured")
@@ -267,6 +277,139 @@ func (m *Manager) BeamMedia(ctx context.Context, req domain.BeamRequest) (*domai
 	}
 }
 
+// BeamYouTubeVideo casts a YouTube videoId via the YouTube Cast app + lounge API.
+// Chromecast / Nest only — DLNA cannot host the YouTube receiver.
+func (m *Manager) BeamYouTubeVideo(ctx context.Context, req domain.YouTubeBeamRequest) (*domain.BeamResult, error) {
+	if m.discovery == nil {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is not configured")
+	}
+	if m.isClosed() {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	if m.youtubeFactory == nil {
+		return nil, toolError("INTERNAL_ERROR", "YouTube cast adapter is not configured")
+	}
+
+	videoID := strings.TrimSpace(req.VideoID)
+	if !youtubecast.ValidVideoID(videoID) {
+		return nil, toolError("INVALID_PARAMS", "video_id must be an 11-character YouTube video id")
+	}
+	startSeconds := 0
+	if req.StartSeconds != nil {
+		if *req.StartSeconds < 0 {
+			return nil, toolError("INVALID_PARAMS", "start_seconds must be >= 0")
+		}
+		startSeconds = *req.StartSeconds
+	}
+
+	beamCtx := ctx
+	cancel := func() {}
+	if m.beamOperationTimeout > 0 {
+		beamCtx, cancel = context.WithTimeout(ctx, m.beamOperationTimeout)
+	}
+	defer cancel()
+
+	device, err := m.resolveDevice(beamCtx, req.TargetDevice)
+	if err != nil {
+		return nil, err
+	}
+	if device.Protocol != "chromecast" {
+		return nil, youtubeProtocolUnsupportedError(device.Protocol)
+	}
+
+	client, err := m.youtubeFactory.NewYouTubeClient(device.Address)
+	if err != nil {
+		return nil, toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to create YouTube cast client: %v", err))
+	}
+	if err := m.withRetry(beamCtx, func() error {
+		return client.Connect()
+	}); err != nil {
+		_ = client.Close(true)
+		return nil, toolError("DEVICE_UNREACHABLE", fmt.Sprintf("failed to connect to Chromecast device: %v", err))
+	}
+
+	if err := client.PlayVideo(beamCtx, videoID, startSeconds); err != nil {
+		_ = client.Close(true)
+		return nil, toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to start YouTube playback: %v", err))
+	}
+
+	mediaURL := youtubecast.WatchURL(videoID)
+	sess := &session{
+		ID:         newSessionID(),
+		DeviceID:   device.ID,
+		DeviceName: device.Name,
+		MediaURL:   mediaURL,
+		Title:      videoID,
+		ContentType: "youtube/video",
+		Protocol:   "chromecast",
+		castClient: &youtubeCastSessionClient{client: client},
+		Warnings: []string{
+			"Cast via YouTube receiver (videoId). Play/pause/seek may be limited compared with beam_media.",
+		},
+	}
+	m.initializeSessionLifecycle(sess, "playing", "")
+	replaced, stored := m.storeSession(sess)
+	if !stored {
+		_ = shutdownSession(sess, true)
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	_ = shutdownSession(replaced, true)
+
+	return &domain.BeamResult{
+		OK:        true,
+		SessionID: sess.ID,
+		DeviceID:  sess.DeviceID,
+		MediaURL:  sess.MediaURL,
+		VideoID:   videoID,
+		Warnings:  append([]string{}, sess.Warnings...),
+	}, nil
+}
+
+func youtubeProtocolUnsupportedError(protocol string) *domain.ToolError {
+	p := strings.TrimSpace(protocol)
+	if p == "" {
+		p = "unknown"
+	}
+	return &domain.ToolError{
+		Code:    "UNSUPPORTED_SOURCE_FOR_PROTOCOL",
+		Message: fmt.Sprintf("beam_youtube_video requires a Chromecast/Nest target; got protocol %q", p),
+		Limitations: []domain.Limitation{{
+			Code:    "YOUTUBE_CAST_CHROMECAST_ONLY",
+			Message: "YouTube cast-by-video-ID uses the YouTube Cast app, which is Chromecast-only.",
+		}},
+		SuggestedFixes: []string{
+			"Run list_local_hardware and choose a Chromecast or Nest target.",
+			"For DLNA, use beam_media with a direct media URL instead.",
+		},
+		Details: map[string]any{
+			"protocol": p,
+		},
+	}
+}
+
+// youtubeCastSessionClient adapts YouTubeClient to CastClient for session controls.
+type youtubeCastSessionClient struct {
+	client adapters.YouTubeClient
+}
+
+func (c *youtubeCastSessionClient) Connect() error { return c.client.Connect() }
+func (c *youtubeCastSessionClient) Load(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
+	return fmt.Errorf("youtube session does not support Load")
+}
+func (c *youtubeCastSessionClient) LoadOnExisting(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
+	return fmt.Errorf("youtube session does not support LoadOnExisting")
+}
+func (c *youtubeCastSessionClient) Play() error                   { return c.client.Play() }
+func (c *youtubeCastSessionClient) Pause() error                  { return c.client.Pause() }
+func (c *youtubeCastSessionClient) Seek(seconds int) error        { return c.client.Seek(seconds) }
+func (c *youtubeCastSessionClient) Stop() error                   { return c.client.Stop() }
+func (c *youtubeCastSessionClient) SetVolume(level float32) error { return c.client.SetVolume(level) }
+func (c *youtubeCastSessionClient) SetMuted(muted bool) error     { return c.client.SetMuted(muted) }
+func (c *youtubeCastSessionClient) GetStatus() (*castprotocol.CastStatus, error) {
+	return c.client.GetStatus()
+}
+func (c *youtubeCastSessionClient) Close(stopMedia bool) error { return c.client.Close(stopMedia) }
+
 func (m *Manager) StopBeaming(_ context.Context, req domain.StopRequest) (*domain.StopResult, error) {
 	if req.SessionID == "" && req.TargetDevice == "" {
 		return nil, toolError("INTERNAL_ERROR", "either session_id or target_device is required")
@@ -296,6 +439,122 @@ func (m *Manager) PlayBeaming(ctx context.Context, req domain.PlaybackControlReq
 
 func (m *Manager) PauseBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error) {
 	return m.controlPlayback(ctx, req, "pause")
+}
+
+func (m *Manager) SetVolumeBeaming(ctx context.Context, req domain.VolumeRequest) (*domain.VolumeResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.isClosed() {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	if req.SessionID == "" && req.TargetDevice == "" {
+		return nil, toolError("INTERNAL_ERROR", "either session_id or target_device is required")
+	}
+	if req.Volume < 0 || req.Volume > 100 {
+		return nil, toolError("INVALID_PARAMS", "volume must be in range [0, 100]")
+	}
+
+	sess := m.findSessionByTarget(req.SessionID, req.TargetDevice)
+	if sess == nil {
+		return nil, toolError("DEVICE_NOT_FOUND", "no active session matches the provided target")
+	}
+
+	if err := m.setSessionVolume(ctx, sess, req.Volume); err != nil {
+		return nil, err
+	}
+
+	return &domain.VolumeResult{
+		OK:        true,
+		SessionID: sess.ID,
+		DeviceID:  sess.DeviceID,
+		Volume:    req.Volume,
+	}, nil
+}
+
+func (m *Manager) MuteBeaming(ctx context.Context, req domain.MuteRequest) (*domain.MuteResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.isClosed() {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	if req.SessionID == "" && req.TargetDevice == "" {
+		return nil, toolError("INTERNAL_ERROR", "either session_id or target_device is required")
+	}
+
+	sess := m.findSessionByTarget(req.SessionID, req.TargetDevice)
+	if sess == nil {
+		return nil, toolError("DEVICE_NOT_FOUND", "no active session matches the provided target")
+	}
+
+	if err := m.setSessionMuted(ctx, sess, req.Muted); err != nil {
+		return nil, err
+	}
+
+	return &domain.MuteResult{
+		OK:        true,
+		SessionID: sess.ID,
+		DeviceID:  sess.DeviceID,
+		Muted:     req.Muted,
+	}, nil
+}
+
+func (m *Manager) setSessionVolume(ctx context.Context, sess *session, volumePercent int) error {
+	switch sess.Protocol {
+	case "chromecast":
+		if sess.castClient == nil {
+			return toolError("INTERNAL_ERROR", "chromecast session is not configured")
+		}
+		level := volumeLevelFromPercent(volumePercent)
+		if err := m.withRetry(ctx, func() error {
+			return sess.castClient.SetVolume(level)
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to set Chromecast volume: %v", err))
+		}
+	case "dlna":
+		if sess.dlnaPayload == nil {
+			return toolError("INTERNAL_ERROR", "dlna session is not configured")
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.dlnaPayload.SetVolumeSoapCall(strconv.Itoa(volumePercent))
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to set DLNA volume: %v", err))
+		}
+	default:
+		return unsupportedProtocolError(sess.Protocol)
+	}
+	return nil
+}
+
+func (m *Manager) setSessionMuted(ctx context.Context, sess *session, muted bool) error {
+	switch sess.Protocol {
+	case "chromecast":
+		if sess.castClient == nil {
+			return toolError("INTERNAL_ERROR", "chromecast session is not configured")
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.castClient.SetMuted(muted)
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to set Chromecast mute: %v", err))
+		}
+	case "dlna":
+		if sess.dlnaPayload == nil {
+			return toolError("INTERNAL_ERROR", "dlna session is not configured")
+		}
+		muteValue := "0"
+		if muted {
+			muteValue = "1"
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.dlnaPayload.SetMuteSoapCall(muteValue)
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to set DLNA mute: %v", err))
+		}
+	default:
+		return unsupportedProtocolError(sess.Protocol)
+	}
+	return nil
 }
 
 func (m *Manager) controlPlayback(ctx context.Context, req domain.PlaybackControlRequest, action string) (*domain.PlaybackControlResult, error) {
@@ -582,6 +841,8 @@ func (m *Manager) GetBeamingStatus(ctx context.Context, req domain.StatusRequest
 			applyDLNAPositionInfo(result, positionInfo)
 		}
 
+		m.applyDLNAVolumeMute(ctx, sess, result)
+
 		positionText := ""
 		if len(positionInfo) >= 2 {
 			positionText = strings.TrimSpace(positionInfo[1])
@@ -592,6 +853,34 @@ func (m *Manager) GetBeamingStatus(ctx context.Context, req domain.StatusRequest
 	}
 
 	return result, nil
+}
+
+func (m *Manager) applyDLNAVolumeMute(ctx context.Context, sess *session, result *domain.StatusResult) {
+	if sess == nil || sess.dlnaPayload == nil || result == nil {
+		return
+	}
+
+	var volume int
+	volumeErr := m.withRetry(ctx, func() error {
+		var err error
+		volume, err = sess.dlnaPayload.GetVolumeSoapCall()
+		return err
+	})
+	if volumeErr == nil {
+		result.Volume = intPtr(clampVolumePercent(volume))
+	}
+
+	var muteRaw string
+	muteErr := m.withRetry(ctx, func() error {
+		var err error
+		muteRaw, err = sess.dlnaPayload.GetMuteSoapCall()
+		return err
+	})
+	if muteErr == nil {
+		if muted, ok := parseDLNAMute(muteRaw); ok {
+			result.Muted = boolPtr(muted)
+		}
+	}
 }
 
 func (m *Manager) seekChromecastTranscoded(ctx context.Context, sess *session, resolvedSeconds int) error {
@@ -1785,12 +2074,58 @@ func applyCastStatus(result *domain.StatusResult, status *castprotocol.CastStatu
 		result.DurationSeconds = float64Ptr(duration)
 	}
 
+	result.Volume = intPtr(volumePercentFromLevel(status.Volume))
+	result.Muted = boolPtr(status.Muted)
+
 	if title := strings.TrimSpace(status.MediaTitle); title != "" {
 		result.Title = title
 	}
 	if contentType := strings.TrimSpace(status.ContentType); contentType != "" {
 		result.ContentType = contentType
 	}
+}
+
+func volumeLevelFromPercent(percent int) float32 {
+	return float32(clampVolumePercent(percent)) / 100
+}
+
+func volumePercentFromLevel(level float32) int {
+	if level < 0 {
+		level = 0
+	}
+	if level > 1 {
+		level = 1
+	}
+	return int(math.Round(float64(level) * 100))
+}
+
+func clampVolumePercent(volume int) int {
+	if volume < 0 {
+		return 0
+	}
+	if volume > 100 {
+		return 100
+	}
+	return volume
+}
+
+func parseDLNAMute(raw string) (bool, bool) {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "1", "true", "yes":
+		return true, true
+	case "0", "false", "no":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func applyDLNAPositionInfo(result *domain.StatusResult, positionInfo []string) {

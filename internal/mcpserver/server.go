@@ -33,9 +33,12 @@ type LocalHardwareLister interface {
 
 type BeamController interface {
 	BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error)
+	BeamYouTubeVideo(ctx context.Context, req domain.YouTubeBeamRequest) (*domain.BeamResult, error)
 	StopBeaming(ctx context.Context, req domain.StopRequest) (*domain.StopResult, error)
 	PlayBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error)
 	PauseBeaming(ctx context.Context, req domain.PlaybackControlRequest) (*domain.PlaybackControlResult, error)
+	SetVolumeBeaming(ctx context.Context, req domain.VolumeRequest) (*domain.VolumeResult, error)
+	MuteBeaming(ctx context.Context, req domain.MuteRequest) (*domain.MuteResult, error)
 	SeekBeaming(ctx context.Context, req domain.SeekRequest) (*domain.SeekResult, error)
 	GetBeamingStatus(ctx context.Context, req domain.StatusRequest) (*domain.StatusResult, error)
 }
@@ -208,12 +211,18 @@ func (s *Server) handleToolCall(ctx context.Context, id json.RawMessage, rawPara
 		return s.handleListLocalHardwareCall(ctx, id, params.Arguments)
 	case "beam_media":
 		return s.handleBeamMediaCall(ctx, id, params.Arguments)
+	case "beam_youtube_video":
+		return s.handleBeamYouTubeVideoCall(ctx, id, params.Arguments)
 	case "stop_beaming":
 		return s.handleStopBeamingCall(ctx, id, params.Arguments)
 	case "play_beaming":
 		return s.handlePlaybackControlCall(ctx, id, params.Arguments, "play_beaming")
 	case "pause_beaming":
 		return s.handlePlaybackControlCall(ctx, id, params.Arguments, "pause_beaming")
+	case "set_beaming_volume":
+		return s.handleSetBeamingVolumeCall(ctx, id, params.Arguments)
+	case "mute_beaming":
+		return s.handleMuteBeamingCall(ctx, id, params.Arguments)
 	case "seek_beaming":
 		return s.handleSeekBeamingCall(ctx, id, params.Arguments)
 	case "get_beaming_status":
@@ -351,6 +360,61 @@ func (s *Server) handleBeamMediaCall(ctx context.Context, id json.RawMessage, ra
 	})
 }
 
+func (s *Server) handleBeamYouTubeVideoCall(ctx context.Context, id json.RawMessage, rawArgs json.RawMessage) error {
+	startedAt := time.Now()
+
+	if s.beamController == nil {
+		return s.sendToolInternalError("beam_youtube_video", "", "", startedAt, id, "beam controller is not configured")
+	}
+
+	var args struct {
+		VideoID      string `json:"video_id"`
+		TargetDevice string `json:"target_device"`
+		StartSeconds *int   `json:"start_seconds,omitempty"`
+	}
+	if err := decodeStrict(rawArgs, &args); err != nil {
+		return s.sendInvalidParams("beam_youtube_video", "", "", startedAt, id)
+	}
+
+	args.VideoID = strings.TrimSpace(args.VideoID)
+	args.TargetDevice = strings.TrimSpace(args.TargetDevice)
+	if args.VideoID == "" || args.TargetDevice == "" {
+		return s.sendInvalidParams("beam_youtube_video", args.TargetDevice, "", startedAt, id)
+	}
+	if args.StartSeconds != nil && *args.StartSeconds < 0 {
+		return s.sendInvalidParams("beam_youtube_video", args.TargetDevice, "", startedAt, id)
+	}
+
+	result, err := s.beamController.BeamYouTubeVideo(ctx, domain.YouTubeBeamRequest{
+		VideoID:      args.VideoID,
+		TargetDevice: args.TargetDevice,
+		StartSeconds: args.StartSeconds,
+	})
+	if err != nil {
+		s.logCall("beam_youtube_video", args.TargetDevice, "", startedAt, toolErrorCode(err))
+		return s.send(response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result:  toolErrorResultFromError(err),
+		})
+	}
+	s.logCall("beam_youtube_video", result.DeviceID, result.SessionID, startedAt, "")
+
+	return s.send(response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: toolCallResult{
+			Content: []toolContent{
+				{
+					Type: "text",
+					Text: fmt.Sprintf("YouTube video %s started on device %s (session %s).", result.VideoID, result.DeviceID, result.SessionID),
+				},
+			},
+			StructuredContent: result,
+		},
+	})
+}
+
 func (s *Server) handleStopBeamingCall(ctx context.Context, id json.RawMessage, rawArgs json.RawMessage) error {
 	startedAt := time.Now()
 
@@ -461,6 +525,129 @@ func (s *Server) handlePlaybackControlCall(ctx context.Context, id json.RawMessa
 	verb := "Resumed"
 	if toolName == "pause_beaming" {
 		verb = "Paused"
+	}
+	return s.send(response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: toolCallResult{
+			Content: []toolContent{
+				{
+					Type: "text",
+					Text: fmt.Sprintf("%s beaming session %s.", verb, result.SessionID),
+				},
+			},
+			StructuredContent: result,
+		},
+	})
+}
+
+func (s *Server) handleSetBeamingVolumeCall(ctx context.Context, id json.RawMessage, rawArgs json.RawMessage) error {
+	startedAt := time.Now()
+
+	if s.beamController == nil {
+		return s.sendToolInternalError("set_beaming_volume", "", "", startedAt, id, "beam controller is not configured")
+	}
+
+	var args struct {
+		TargetDevice *string `json:"target_device,omitempty"`
+		SessionID    *string `json:"session_id,omitempty"`
+		Volume       *int    `json:"volume,omitempty"`
+	}
+	if err := decodeStrict(rawArgs, &args); err != nil {
+		return s.sendInvalidParams("set_beaming_volume", "", "", startedAt, id)
+	}
+
+	targetDevice := ""
+	sessionID := ""
+	if args.TargetDevice != nil {
+		targetDevice = strings.TrimSpace(*args.TargetDevice)
+	}
+	if args.SessionID != nil {
+		sessionID = strings.TrimSpace(*args.SessionID)
+	}
+	if (targetDevice == "" && sessionID == "") || args.Volume == nil {
+		return s.sendInvalidParams("set_beaming_volume", targetDevice, sessionID, startedAt, id)
+	}
+	if *args.Volume < 0 || *args.Volume > 100 {
+		return s.sendInvalidParams("set_beaming_volume", targetDevice, sessionID, startedAt, id)
+	}
+
+	result, err := s.beamController.SetVolumeBeaming(ctx, domain.VolumeRequest{
+		TargetDevice: targetDevice,
+		SessionID:    sessionID,
+		Volume:       *args.Volume,
+	})
+	if err != nil {
+		s.logCall("set_beaming_volume", targetDevice, sessionID, startedAt, toolErrorCode(err))
+		return s.send(response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result:  toolErrorResultFromError(err),
+		})
+	}
+	s.logCall("set_beaming_volume", result.DeviceID, result.SessionID, startedAt, "")
+
+	return s.send(response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: toolCallResult{
+			Content: []toolContent{
+				{
+					Type: "text",
+					Text: fmt.Sprintf("Set volume to %d for session %s.", result.Volume, result.SessionID),
+				},
+			},
+			StructuredContent: result,
+		},
+	})
+}
+
+func (s *Server) handleMuteBeamingCall(ctx context.Context, id json.RawMessage, rawArgs json.RawMessage) error {
+	startedAt := time.Now()
+
+	if s.beamController == nil {
+		return s.sendToolInternalError("mute_beaming", "", "", startedAt, id, "beam controller is not configured")
+	}
+
+	var args struct {
+		TargetDevice *string `json:"target_device,omitempty"`
+		SessionID    *string `json:"session_id,omitempty"`
+		Muted        *bool   `json:"muted,omitempty"`
+	}
+	if err := decodeStrict(rawArgs, &args); err != nil {
+		return s.sendInvalidParams("mute_beaming", "", "", startedAt, id)
+	}
+
+	targetDevice := ""
+	sessionID := ""
+	if args.TargetDevice != nil {
+		targetDevice = strings.TrimSpace(*args.TargetDevice)
+	}
+	if args.SessionID != nil {
+		sessionID = strings.TrimSpace(*args.SessionID)
+	}
+	if (targetDevice == "" && sessionID == "") || args.Muted == nil {
+		return s.sendInvalidParams("mute_beaming", targetDevice, sessionID, startedAt, id)
+	}
+
+	result, err := s.beamController.MuteBeaming(ctx, domain.MuteRequest{
+		TargetDevice: targetDevice,
+		SessionID:    sessionID,
+		Muted:        *args.Muted,
+	})
+	if err != nil {
+		s.logCall("mute_beaming", targetDevice, sessionID, startedAt, toolErrorCode(err))
+		return s.send(response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result:  toolErrorResultFromError(err),
+		})
+	}
+	s.logCall("mute_beaming", result.DeviceID, result.SessionID, startedAt, "")
+
+	verb := "Unmuted"
+	if result.Muted {
+		verb = "Muted"
 	}
 	return s.send(response{
 		JSONRPC: "2.0",
@@ -877,6 +1064,16 @@ func formatBeamingStatusText(result *domain.StatusResult) string {
 		}
 		out.WriteByte('.')
 	}
+	if result.Volume != nil {
+		fmt.Fprintf(&out, " Volume %d.", *result.Volume)
+	}
+	if result.Muted != nil {
+		if *result.Muted {
+			out.WriteString(" Muted.")
+		} else {
+			out.WriteString(" Unmuted.")
+		}
+	}
 	if strings.TrimSpace(result.Title) != "" {
 		fmt.Fprintf(&out, " Title: %s.", strings.TrimSpace(result.Title))
 	}
@@ -908,7 +1105,7 @@ func staticTools() []tool {
 		},
 		{
 			Name:        "beam_media",
-			Description: "Cast or stream media (video, audio, etc.) to a selected local Smart TV, Chromecast, or UPnP/DLNA device. You must provide a valid target_device ID or name.",
+			Description: "Cast or stream direct media (local files or http/https mp3/mp4/m3u8 URLs) to a Chromecast or DLNA/UPnP device. Do not pass YouTube watch URLs here — use beam_youtube_video with a video_id instead.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -941,8 +1138,33 @@ func staticTools() []tool {
 			},
 		},
 		{
+			Name: "beam_youtube_video",
+			Description: "Cast a YouTube / YouTube Music videoId to a Chromecast or Nest speaker via the YouTube Cast receiver. " +
+				"Use this for videoId values from youtube-go-mcp (or similar). Do not beam music.youtube.com watch URLs with beam_media.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"video_id": map[string]any{
+						"type":        "string",
+						"description": "11-character YouTube video id (e.g. dQw4w9WgXcQ). Not a full URL.",
+					},
+					"target_device": map[string]any{
+						"type":        "string",
+						"description": "Chromecast/Nest device ID or exact name from list_local_hardware.",
+					},
+					"start_seconds": map[string]any{
+						"type":        "integer",
+						"minimum":     0,
+						"description": "Optional start offset in seconds.",
+					},
+				},
+				"required":             []string{"video_id", "target_device"},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        "get_beaming_status",
-			Description: "Get current playback status for an active beaming session, including state, position, duration, title, and content type when available.",
+			Description: "Get current playback status for an active beaming session, including state, position, duration, volume, mute, title, and content type when available.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -974,6 +1196,56 @@ func staticTools() []tool {
 				"The device ID or exact name of the device to pause playback on.",
 				"The unique session ID to pause. This is returned by a successful 'beam_media' call.",
 			),
+		},
+		{
+			Name:        "set_beaming_volume",
+			Description: "Set absolute volume (0-100) for an active beaming session on Chromecast or DLNA/UPnP.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"target_device": map[string]any{
+						"type":        "string",
+						"description": "The device ID or exact name of the session target.",
+					},
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "The unique session ID to control. This is returned by a successful 'beam_media' call.",
+					},
+					"volume": map[string]any{
+						"type":        "integer",
+						"minimum":     0,
+						"maximum":     100,
+						"description": "Absolute volume level from 0 (silent) to 100 (max).",
+					},
+				},
+				"required":             []string{"volume"},
+				"minProperties":        2,
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        "mute_beaming",
+			Description: "Mute or unmute an active beaming session on Chromecast or DLNA/UPnP.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"target_device": map[string]any{
+						"type":        "string",
+						"description": "The device ID or exact name of the session target.",
+					},
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "The unique session ID to control. This is returned by a successful 'beam_media' call.",
+					},
+					"muted": map[string]any{
+						"type":        "boolean",
+						"description": "Set true to mute playback, or false to unmute.",
+					},
+				},
+				"required":             []string{"muted"},
+				"minProperties":        2,
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        "seek_beaming",

@@ -117,6 +117,10 @@ type fakeCastClient struct {
 	loadSubtitle        string
 	loadStartTime       int
 	seekSeconds         int
+	volumeLevel         float32
+	muted               bool
+	setVolumeErr        error
+	setMutedErr         error
 	connectCalls        int
 	loadCalls           int
 	loadOnExistingCalls int
@@ -126,6 +130,8 @@ type fakeCastClient struct {
 	stopCalls           int
 	closeCalls          int
 	statusCalls         int
+	setVolumeCalls      int
+	setMutedCalls       int
 
 	mu sync.Mutex
 }
@@ -210,6 +216,18 @@ func (f *fakeCastClient) Seek(seconds int) error {
 	return f.seekErr
 }
 
+func (f *fakeCastClient) SetVolume(level float32) error {
+	f.setVolumeCalls++
+	f.volumeLevel = level
+	return f.setVolumeErr
+}
+
+func (f *fakeCastClient) SetMuted(muted bool) error {
+	f.setMutedCalls++
+	f.muted = muted
+	return f.setMutedErr
+}
+
 func (f *fakeCastClient) GetStatus() (*castprotocol.CastStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -291,6 +309,18 @@ type fakeDLNAPayload struct {
 	stopPlaybackCalls  int
 	seekErr            error
 	seekRelTime        string
+	volume             int
+	volumeErr          error
+	muteValue          string
+	muteErr            error
+	setVolumeValue     string
+	setVolumeErr       error
+	setMuteValue       string
+	setMuteErr         error
+	getVolumeCalls     int
+	setVolumeCalls     int
+	getMuteCalls       int
+	setMuteCalls       int
 
 	setContextCalls int
 	ctx             context.Context
@@ -368,6 +398,36 @@ func (f *fakeDLNAPayload) SeekSoapCall(reltime string) error {
 	defer f.mu.Unlock()
 	f.seekRelTime = reltime
 	return f.seekErr
+}
+
+func (f *fakeDLNAPayload) GetVolumeSoapCall() (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getVolumeCalls++
+	return f.volume, f.volumeErr
+}
+
+func (f *fakeDLNAPayload) SetVolumeSoapCall(v string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setVolumeCalls++
+	f.setVolumeValue = v
+	return f.setVolumeErr
+}
+
+func (f *fakeDLNAPayload) GetMuteSoapCall() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getMuteCalls++
+	return f.muteValue, f.muteErr
+}
+
+func (f *fakeDLNAPayload) SetMuteSoapCall(number string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setMuteCalls++
+	f.setMuteValue = number
+	return f.setMuteErr
 }
 
 func (f *fakeDLNAPayload) ListenAddress() string {
@@ -930,6 +990,147 @@ func TestPlayPauseBeamingChromecastBySessionID(t *testing.T) {
 	}
 }
 
+func TestSetVolumeMuteBeamingChromecastBySessionID(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+
+	castClient := &fakeCastClient{}
+	sess := &session{
+		ID:         "sess_volume_cast",
+		DeviceID:   "dev_cast",
+		DeviceName: "Living Room",
+		Protocol:   "chromecast",
+		castClient: castClient,
+	}
+	manager.initializeSessionLifecycle(sess, "playing", "10")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	volumeResult, err := manager.SetVolumeBeaming(context.Background(), domain.VolumeRequest{
+		SessionID: "sess_volume_cast",
+		Volume:    35,
+	})
+	if err != nil {
+		t.Fatalf("set volume: %v", err)
+	}
+	if !volumeResult.OK || volumeResult.Volume != 35 {
+		t.Fatalf("unexpected volume result: %#v", volumeResult)
+	}
+	if castClient.setVolumeCalls != 1 {
+		t.Fatalf("expected one set volume call, got %d", castClient.setVolumeCalls)
+	}
+	if castClient.volumeLevel != 0.35 {
+		t.Fatalf("expected chromecast level 0.35, got %v", castClient.volumeLevel)
+	}
+
+	muteResult, err := manager.MuteBeaming(context.Background(), domain.MuteRequest{
+		SessionID: "sess_volume_cast",
+		Muted:     true,
+	})
+	if err != nil {
+		t.Fatalf("mute beaming: %v", err)
+	}
+	if !muteResult.OK || !muteResult.Muted {
+		t.Fatalf("unexpected mute result: %#v", muteResult)
+	}
+	if castClient.setMutedCalls != 1 || !castClient.muted {
+		t.Fatalf("expected muted=true after one mute call, got calls=%d muted=%v", castClient.setMutedCalls, castClient.muted)
+	}
+}
+
+func TestSetVolumeMuteBeamingDLNAByTargetDevice(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+
+	dlnaPayload := &fakeDLNAPayload{listenAddr: "127.0.0.1:3512"}
+	sess := &session{
+		ID:          "sess_volume_dlna",
+		DeviceID:    "dev_dlna",
+		DeviceName:  "Bedroom TV",
+		Protocol:    "dlna",
+		dlnaPayload: dlnaPayload,
+	}
+	manager.initializeSessionLifecycle(sess, "playing", "00:00:10")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	volumeResult, err := manager.SetVolumeBeaming(context.Background(), domain.VolumeRequest{
+		TargetDevice: "Bedroom TV",
+		Volume:       40,
+	})
+	if err != nil {
+		t.Fatalf("set volume: %v", err)
+	}
+	if volumeResult.Volume != 40 {
+		t.Fatalf("expected volume 40, got %d", volumeResult.Volume)
+	}
+	if dlnaPayload.setVolumeCalls != 1 || dlnaPayload.setVolumeValue != "40" {
+		t.Fatalf("unexpected DLNA set volume: calls=%d value=%q", dlnaPayload.setVolumeCalls, dlnaPayload.setVolumeValue)
+	}
+
+	muteResult, err := manager.MuteBeaming(context.Background(), domain.MuteRequest{
+		TargetDevice: "Bedroom TV",
+		Muted:        true,
+	})
+	if err != nil {
+		t.Fatalf("mute beaming: %v", err)
+	}
+	if !muteResult.Muted {
+		t.Fatal("expected muted=true")
+	}
+	if dlnaPayload.setMuteCalls != 1 || dlnaPayload.setMuteValue != "1" {
+		t.Fatalf("unexpected DLNA set mute: calls=%d value=%q", dlnaPayload.setMuteCalls, dlnaPayload.setMuteValue)
+	}
+
+	unmuteResult, err := manager.MuteBeaming(context.Background(), domain.MuteRequest{
+		TargetDevice: "Bedroom TV",
+		Muted:        false,
+	})
+	if err != nil {
+		t.Fatalf("unmute beaming: %v", err)
+	}
+	if unmuteResult.Muted {
+		t.Fatal("expected muted=false")
+	}
+	if dlnaPayload.setMuteCalls != 2 || dlnaPayload.setMuteValue != "0" {
+		t.Fatalf("unexpected DLNA unmute: calls=%d value=%q", dlnaPayload.setMuteCalls, dlnaPayload.setMuteValue)
+	}
+}
+
+func TestSetVolumeBeamingRejectsOutOfRange(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	defer manager.Close(context.Background())
+
+	castClient := &fakeCastClient{}
+	sess := &session{
+		ID:         "sess_volume_range",
+		DeviceID:   "dev_cast",
+		Protocol:   "chromecast",
+		castClient: castClient,
+	}
+	manager.initializeSessionLifecycle(sess, "playing", "10")
+	if _, stored := manager.storeSession(sess); !stored {
+		t.Fatal("expected session to be stored")
+	}
+
+	_, err := manager.SetVolumeBeaming(context.Background(), domain.VolumeRequest{
+		SessionID: "sess_volume_range",
+		Volume:    101,
+	})
+	if err == nil {
+		t.Fatal("expected out-of-range volume to fail")
+	}
+	var toolErr *domain.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "INVALID_PARAMS" {
+		t.Fatalf("expected INVALID_PARAMS, got %v", err)
+	}
+	if castClient.setVolumeCalls != 0 {
+		t.Fatalf("expected no set volume calls, got %d", castClient.setVolumeCalls)
+	}
+}
+
 func TestPlayPauseBeamingDLNAByTargetDevice(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	defer manager.Close(context.Background())
@@ -1052,6 +1253,8 @@ func TestGetBeamingStatusChromecastUsesCastStatus(t *testing.T) {
 				PlayerState: "PAUSED",
 				CurrentTime: 42,
 				Duration:    300,
+				Volume:      0.42,
+				Muted:       true,
 				MediaTitle:  "Remote Title",
 				ContentType: "video/mp4",
 			},
@@ -1096,6 +1299,12 @@ func TestGetBeamingStatusChromecastUsesCastStatus(t *testing.T) {
 	if result.ContentType != "video/mp4" {
 		t.Fatalf("expected video/mp4 content type, got %q", result.ContentType)
 	}
+	if result.Volume == nil || *result.Volume != 42 {
+		t.Fatalf("expected volume 42, got %#v", result.Volume)
+	}
+	if result.Muted == nil || !*result.Muted {
+		t.Fatalf("expected muted=true, got %#v", result.Muted)
+	}
 	if castClient.statusCalls != 1 {
 		t.Fatalf("expected one status call, got %d", castClient.statusCalls)
 	}
@@ -1109,6 +1318,8 @@ func TestGetBeamingStatusDLNAUsesTransportAndPositionInfo(t *testing.T) {
 		listenAddr:         "127.0.0.1:3511",
 		transportResponses: [][]string{{"PLAYING", "OK", "1"}},
 		positionResponse:   []string{"00:10:00", "00:01:05"},
+		volume:             55,
+		muteValue:          "0",
 	}
 	sess := &session{
 		ID:          "sess_status_dlna",
@@ -1148,6 +1359,18 @@ func TestGetBeamingStatusDLNAUsesTransportAndPositionInfo(t *testing.T) {
 	}
 	if result.ContentType != "video/mp4" {
 		t.Fatalf("expected session content type, got %q", result.ContentType)
+	}
+	if result.Volume == nil || *result.Volume != 55 {
+		t.Fatalf("expected volume 55, got %#v", result.Volume)
+	}
+	if result.Muted == nil || *result.Muted {
+		t.Fatalf("expected muted=false, got %#v", result.Muted)
+	}
+	if dlnaPayload.getVolumeCalls != 1 {
+		t.Fatalf("expected one get volume call, got %d", dlnaPayload.getVolumeCalls)
+	}
+	if dlnaPayload.getMuteCalls != 1 {
+		t.Fatalf("expected one get mute call, got %d", dlnaPayload.getMuteCalls)
 	}
 }
 
@@ -2993,9 +3216,130 @@ func containsWarning(warnings []string, needle string) bool {
 	return false
 }
 
+type fakeYouTubeFactory struct {
+	client *fakeYouTubeClient
+	err    error
+}
+
+func (f *fakeYouTubeFactory) NewYouTubeClient(deviceAddr string) (adapters.YouTubeClient, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.client == nil {
+		f.client = &fakeYouTubeClient{}
+	}
+	f.client.deviceAddr = deviceAddr
+	return f.client, nil
+}
+
+type fakeYouTubeClient struct {
+	deviceAddr    string
+	connectErr   error
+	playErr      error
+	videoID      string
+	startSeconds int
+	connectCalls int
+	playCalls    int
+	closeCalls   int
+	stopCalls    int
+}
+
+func (f *fakeYouTubeClient) Connect() error {
+	f.connectCalls++
+	return f.connectErr
+}
+
+func (f *fakeYouTubeClient) PlayVideo(ctx context.Context, videoID string, startSeconds int) error {
+	f.playCalls++
+	f.videoID = videoID
+	f.startSeconds = startSeconds
+	return f.playErr
+}
+
+func (f *fakeYouTubeClient) Play() error                   { return nil }
+func (f *fakeYouTubeClient) Pause() error                  { return nil }
+func (f *fakeYouTubeClient) Seek(seconds int) error        { return nil }
+func (f *fakeYouTubeClient) Stop() error                   { f.stopCalls++; return nil }
+func (f *fakeYouTubeClient) SetVolume(level float32) error { return nil }
+func (f *fakeYouTubeClient) SetMuted(muted bool) error     { return nil }
+func (f *fakeYouTubeClient) GetStatus() (*castprotocol.CastStatus, error) {
+	return &castprotocol.CastStatus{PlayerState: "PLAYING"}, nil
+}
+func (f *fakeYouTubeClient) Close(stopMedia bool) error { f.closeCalls++; return nil }
+
+func TestBeamYouTubeVideo(t *testing.T) {
+	discovery := &fakeDiscovery{devices: []domain.Device{{
+		ID:       "nest_1",
+		Name:     "Kitchen Nest",
+		Protocol: "chromecast",
+		Address:  "http://192.168.1.50:8009",
+	}}}
+	yt := &fakeYouTubeClient{}
+	manager := NewManager(discovery, nil, nil).WithYouTubeFactory(&fakeYouTubeFactory{client: yt})
+	defer manager.Close(context.Background())
+
+	start := 9
+	result, err := manager.BeamYouTubeVideo(context.Background(), domain.YouTubeBeamRequest{
+		VideoID:      "dQw4w9WgXcQ",
+		TargetDevice: "nest_1",
+		StartSeconds: &start,
+	})
+	if err != nil {
+		t.Fatalf("BeamYouTubeVideo: %v", err)
+	}
+	if !result.OK || result.VideoID != "dQw4w9WgXcQ" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if result.MediaURL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
+		t.Fatalf("unexpected media url: %s", result.MediaURL)
+	}
+	if yt.connectCalls != 1 || yt.playCalls != 1 || yt.videoID != "dQw4w9WgXcQ" || yt.startSeconds != 9 {
+		t.Fatalf("unexpected youtube client calls: %#v", yt)
+	}
+}
+
+func TestBeamYouTubeVideoRejectsDLNA(t *testing.T) {
+	discovery := &fakeDiscovery{devices: []domain.Device{{
+		ID:       "tv_1",
+		Name:     "Living Room TV",
+		Protocol: "dlna",
+		Address:  "http://192.168.1.60:9197",
+	}}}
+	manager := NewManager(discovery, nil, nil).WithYouTubeFactory(&fakeYouTubeFactory{client: &fakeYouTubeClient{}})
+	defer manager.Close(context.Background())
+
+	_, err := manager.BeamYouTubeVideo(context.Background(), domain.YouTubeBeamRequest{
+		VideoID:      "dQw4w9WgXcQ",
+		TargetDevice: "tv_1",
+	})
+	if err == nil {
+		t.Fatal("expected error for DLNA target")
+	}
+	var toolErr *domain.ToolError
+	if !errors.As(err, &toolErr) || toolErr.Code != "UNSUPPORTED_SOURCE_FOR_PROTOCOL" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBeamYouTubeVideoRejectsInvalidVideoID(t *testing.T) {
+	manager := NewManager(&fakeDiscovery{}, nil, nil).WithYouTubeFactory(&fakeYouTubeFactory{})
+	defer manager.Close(context.Background())
+
+	_, err := manager.BeamYouTubeVideo(context.Background(), domain.YouTubeBeamRequest{
+		VideoID:      "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+		TargetDevice: "nest_1",
+	})
+	if err == nil {
+		t.Fatal("expected invalid video id error")
+	}
+}
+
 var (
-	_ adapters.CastClient  = (*fakeCastClient)(nil)
-	_ adapters.CastFactory = (*fakeCastFactory)(nil)
-	_ adapters.DLNAFactory = (*fakeDLNAFactory)(nil)
-	_ adapters.DLNAPayload = (*fakeDLNAPayload)(nil)
+	_ adapters.CastClient     = (*fakeCastClient)(nil)
+	_ adapters.CastFactory    = (*fakeCastFactory)(nil)
+	_ adapters.YouTubeClient  = (*fakeYouTubeClient)(nil)
+	_ adapters.YouTubeFactory = (*fakeYouTubeFactory)(nil)
+	_ adapters.DLNAFactory    = (*fakeDLNAFactory)(nil)
+	_ adapters.DLNAPayload    = (*fakeDLNAPayload)(nil)
+	_ adapters.CastClient     = (*youtubeCastSessionClient)(nil)
 )

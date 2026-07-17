@@ -11,12 +11,15 @@
 
 `mcp-beam` is a MCP server (`stdio` transport) for casting local files and media URLs to Chromecast and DLNA/UPnP devices on your LAN.
 
-It exposes seven tools:
+It exposes these tools:
 - `list_local_hardware`
 - `beam_media`
+- `beam_youtube_video`
 - `get_beaming_status`
 - `play_beaming`
 - `pause_beaming`
+- `set_beaming_volume`
+- `mute_beaming`
 - `seek_beaming`
 - `stop_beaming`
 
@@ -93,9 +96,11 @@ go run go2tv.app/mcp-beam@latest --self-test
 ### 3) Run the tool flow
 
 1. Call `list_local_hardware` and pick a device `id`.
-2. Call `beam_media` with `source` and `target_device`.
-3. Call `get_beaming_status`, `play_beaming`, `pause_beaming`, or `seek_beaming` as needed.
+2. Call `beam_media` with a direct media `source` (file/URL), **or** `beam_youtube_video` with a YouTube `video_id` (Chromecast/Nest).
+3. Call `get_beaming_status`, `play_beaming`, `pause_beaming`, `set_beaming_volume`, `mute_beaming`, or `seek_beaming` as needed.
 4. Call `stop_beaming` when done.
+
+Do **not** pass `https://music.youtube.com/watch?v=…` to `beam_media` — that is a web page, not a stream. Use `beam_youtube_video` with the bare `video_id` instead.
 
 Minimal example flow:
 
@@ -143,6 +148,26 @@ Minimal example flow:
   "name": "play_beaming",
   "arguments": {
     "session_id": "sess_abcd1234"
+  }
+}
+```
+
+```json
+{
+  "name": "set_beaming_volume",
+  "arguments": {
+    "session_id": "sess_abcd1234",
+    "volume": 35
+  }
+}
+```
+
+```json
+{
+  "name": "mute_beaming",
+  "arguments": {
+    "session_id": "sess_abcd1234",
+    "muted": true
   }
 }
 ```
@@ -394,6 +419,35 @@ Protocol notes:
 - Chromecast supports local files and URL sources.
 - Chromecast supports direct `.m3u8` HLS URL casting.
 - DLNA supports local files and URL sources with direct-first then proxy fallback behavior.
+- YouTube / YouTube Music **watch URLs are not playable** via `beam_media` (Default Media Receiver needs a direct stream). Use `beam_youtube_video`.
+
+### `beam_youtube_video`
+
+Cast a YouTube `video_id` to a Chromecast or Nest device using the YouTube Cast receiver + lounge API (same path as pychromecast/casttube).
+
+Arguments:
+- `video_id` (required string): 11-character YouTube video id (not a URL)
+- `target_device` (required string): Chromecast/Nest device ID or exact name
+- `start_seconds` (optional integer, minimum `0`)
+
+Example:
+
+```json
+{
+  "name": "beam_youtube_video",
+  "arguments": {
+    "video_id": "dQw4w9WgXcQ",
+    "target_device": "dev_1234abcd",
+    "start_seconds": 0
+  }
+}
+```
+
+On success, `structuredContent` includes the usual beam fields plus `video_id`.
+
+Protocol notes:
+- Chromecast / Nest only.
+- Pair with a track source MCP such as [youtube-go-mcp](https://github.com/shotah/youtube-go-mcp) (`search_tracks` → `videoId` → `beam_youtube_video`).
 - DLNA `.m3u8` URLs are rejected with structured limitation details.
 - When `subtitles_path` is omitted for local files, mcp-beam auto-detects sidecar subtitles using the same basename (`.srt`, then `.vtt`).
 
@@ -426,6 +480,8 @@ On success, `structuredContent` includes:
 - `state`
 - optional `position_seconds`
 - optional `duration_seconds`
+- optional `volume` (`0`-`100`)
+- optional `muted`
 - optional `title`
 - optional `content_type`
 - `media_url`
@@ -483,6 +539,62 @@ On success, `structuredContent` includes:
 - `session_id`
 - `device_id`
 - `state` (`paused`)
+
+### `set_beaming_volume`
+
+Set absolute volume for an active beam session.
+
+Arguments:
+- `target_device` (optional string)
+- `session_id` (optional string)
+- `volume` (required integer, `0`-`100`)
+- At least one of `target_device` or `session_id` is required.
+
+Example:
+
+```json
+{
+  "name": "set_beaming_volume",
+  "arguments": {
+    "session_id": "sess_abcd1234",
+    "volume": 35
+  }
+}
+```
+
+On success, `structuredContent` includes:
+- `ok`
+- `session_id`
+- `device_id`
+- `volume`
+
+### `mute_beaming`
+
+Mute or unmute an active beam session.
+
+Arguments:
+- `target_device` (optional string)
+- `session_id` (optional string)
+- `muted` (required boolean)
+- At least one of `target_device` or `session_id` is required.
+
+Example:
+
+```json
+{
+  "name": "mute_beaming",
+  "arguments": {
+    "session_id": "sess_abcd1234",
+    "muted": true
+  }
+}
+```
+
+On success, `structuredContent` includes:
+- `ok`
+- `session_id`
+- `device_id`
+- `muted`
 
 ### `stop_beaming`
 
@@ -606,6 +718,7 @@ Common tool error codes:
 - `SEEK_MODE_INVALID`
 - `SEEK_POSITION_INVALID`
 - `SEEK_DURATION_UNKNOWN`
+- `INVALID_PARAMS`
 - `PROTOCOL_ERROR`
 - `INTERNAL_ERROR`
 
@@ -672,8 +785,9 @@ Core flow:
 2. `beam_media`: validate source, resolve target, choose protocol, decide transcode, start playback, persist session.
 3. `get_beaming_status`: query active sessions by `session_id` or `target_device`.
 4. `play_beaming` / `pause_beaming`: resume or pause active sessions by `session_id` or `target_device`.
-5. `seek_beaming`: seek active sessions by `session_id` or `target_device`.
-6. `stop_beaming`: resolve session/device, stop protocol playback, tear down runtime resources.
+5. `set_beaming_volume` / `mute_beaming`: set volume (0-100) or mute state for active sessions.
+6. `seek_beaming`: seek active sessions by `session_id` or `target_device`.
+7. `stop_beaming`: resolve session/device, stop protocol playback, tear down runtime resources.
 
 Session lifecycle defaults:
 - `idle_cleanup_after = 10m`

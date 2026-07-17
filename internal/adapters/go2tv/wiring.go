@@ -7,20 +7,23 @@ import (
 	"go2tv.app/go2tv/v2/devices"
 	"go2tv.app/go2tv/v2/soapcalls"
 	"go2tv.app/mcp-beam/internal/adapters"
+	"go2tv.app/mcp-beam/internal/youtubecast"
 )
 
 // Bundle wires all external go2tv-backed adapters in one place.
 type Bundle struct {
-	Discovery   adapters.Discovery
-	CastFactory adapters.CastFactory
-	DLNAFactory adapters.DLNAFactory
+	Discovery      adapters.Discovery
+	CastFactory    adapters.CastFactory
+	YouTubeFactory adapters.YouTubeFactory
+	DLNAFactory    adapters.DLNAFactory
 }
 
 func NewBundle() Bundle {
 	return Bundle{
-		Discovery:   DiscoveryAdapter{},
-		CastFactory: CastFactory{},
-		DLNAFactory: DLNAFactory{},
+		Discovery:      DiscoveryAdapter{},
+		CastFactory:    CastFactory{},
+		YouTubeFactory: YouTubeFactory{},
+		DLNAFactory:    DLNAFactory{},
 	}
 }
 
@@ -77,12 +80,26 @@ func (c *CastClientAdapter) Stop() error {
 	return c.client.Stop()
 }
 
+func (c *CastClientAdapter) SetVolume(level float32) error {
+	return c.client.SetVolume(level)
+}
+
+func (c *CastClientAdapter) SetMuted(muted bool) error {
+	return c.client.SetMuted(muted)
+}
+
 func (c *CastClientAdapter) GetStatus() (*castprotocol.CastStatus, error) {
 	return c.client.GetStatus()
 }
 
 func (c *CastClientAdapter) Close(stopMedia bool) error {
 	return c.client.Close(stopMedia)
+}
+
+type YouTubeFactory struct{}
+
+func (YouTubeFactory) NewYouTubeClient(deviceAddr string) (adapters.YouTubeClient, error) {
+	return youtubecast.NewClient(deviceAddr)
 }
 
 type DLNAFactory struct{}
@@ -120,6 +137,22 @@ func (d *DLNAPayloadAdapter) GetPositionInfo() ([]string, error) {
 	return d.payload.GetPositionInfo()
 }
 
+func (d *DLNAPayloadAdapter) GetVolumeSoapCall() (int, error) {
+	return d.payload.GetVolumeSoapCall()
+}
+
+func (d *DLNAPayloadAdapter) SetVolumeSoapCall(v string) error {
+	return d.payload.SetVolumeSoapCall(v)
+}
+
+func (d *DLNAPayloadAdapter) GetMuteSoapCall() (string, error) {
+	return d.payload.GetMuteSoapCall()
+}
+
+func (d *DLNAPayloadAdapter) SetMuteSoapCall(number string) error {
+	return d.payload.SetMuteSoapCall(number)
+}
+
 func (d *DLNAPayloadAdapter) ListenAddress() string {
 	return d.payload.ListenAddress()
 }
@@ -141,7 +174,9 @@ func (d *DLNAPayloadAdapter) RawPayload() *soapcalls.TVPayload {
 }
 
 var (
-	_ adapters.Discovery   = DiscoveryAdapter{}
-	_ adapters.CastFactory = CastFactory{}
-	_ adapters.DLNAFactory = DLNAFactory{}
+	_ adapters.Discovery      = DiscoveryAdapter{}
+	_ adapters.CastFactory    = CastFactory{}
+	_ adapters.YouTubeFactory = YouTubeFactory{}
+	_ adapters.DLNAFactory    = DLNAFactory{}
+	_ adapters.YouTubeClient  = (*youtubecast.Client)(nil)
 )
