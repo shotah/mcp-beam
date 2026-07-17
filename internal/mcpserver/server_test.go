@@ -28,37 +28,37 @@ type fakeLocalHardwareLister struct {
 }
 
 type fakeBeamController struct {
-	mu              sync.Mutex
-	beamReq         domain.BeamRequest
-	beamResult      *domain.BeamResult
-	beamErr         error
-	youtubeReq      domain.YouTubeBeamRequest
-	youtubeResult   *domain.BeamResult
-	youtubeErr      error
-	stopReq         domain.StopRequest
-	stopResult      *domain.StopResult
-	stopErr         error
-	playReq         domain.PlaybackControlRequest
-	playResult      *domain.PlaybackControlResult
-	playErr         error
-	pauseReq        domain.PlaybackControlRequest
-	pauseResult     *domain.PlaybackControlResult
-	pauseErr        error
-	volumeReq       domain.VolumeRequest
-	volumeResult    *domain.VolumeResult
-	volumeErr       error
-	muteReq         domain.MuteRequest
-	muteResult      *domain.MuteResult
-	muteErr         error
-	seekReq         domain.SeekRequest
-	seekResult      *domain.SeekResult
-	seekErr         error
-	statusReq       domain.StatusRequest
-	statusResult    *domain.StatusResult
-	statusErr       error
-	beamBlock       <-chan struct{}
-	beamCalled      chan struct{}
-	beamOnce        sync.Once
+	mu            sync.Mutex
+	beamReq       domain.BeamRequest
+	beamResult    *domain.BeamResult
+	beamErr       error
+	youtubeReq    domain.YouTubeBeamRequest
+	youtubeResult *domain.BeamResult
+	youtubeErr    error
+	stopReq       domain.StopRequest
+	stopResult    *domain.StopResult
+	stopErr       error
+	playReq       domain.PlaybackControlRequest
+	playResult    *domain.PlaybackControlResult
+	playErr       error
+	pauseReq      domain.PlaybackControlRequest
+	pauseResult   *domain.PlaybackControlResult
+	pauseErr      error
+	volumeReq     domain.VolumeRequest
+	volumeResult  *domain.VolumeResult
+	volumeErr     error
+	muteReq       domain.MuteRequest
+	muteResult    *domain.MuteResult
+	muteErr       error
+	seekReq       domain.SeekRequest
+	seekResult    *domain.SeekResult
+	seekErr       error
+	statusReq     domain.StatusRequest
+	statusResult  *domain.StatusResult
+	statusErr     error
+	beamBlock     <-chan struct{}
+	beamCalled    chan struct{}
+	beamOnce      sync.Once
 }
 
 func (f *fakeBeamController) BeamMedia(ctx context.Context, req domain.BeamRequest) (*domain.BeamResult, error) {

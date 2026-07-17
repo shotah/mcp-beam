@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go2tv.app/go2tv/v2/devices"
+
 	"go2tv.app/mcp-beam/internal/adapters"
 	"go2tv.app/mcp-beam/internal/domain"
 )
@@ -32,7 +33,7 @@ type Service struct {
 	once    sync.Once
 }
 
-func NewService(adapter adapters.Discovery, loopCtx context.Context) *Service {
+func NewService(adapter adapters.Discovery, loopCtx context.Context) *Service { //nolint:revive // keep adapter-first constructor signature
 	if loopCtx == nil {
 		loopCtx = context.Background()
 	}

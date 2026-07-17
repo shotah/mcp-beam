@@ -24,6 +24,7 @@ import (
 	"go2tv.app/go2tv/v2/httphandlers"
 	"go2tv.app/go2tv/v2/soapcalls"
 	"go2tv.app/go2tv/v2/utils"
+
 	"go2tv.app/mcp-beam/internal/adapters"
 	"go2tv.app/mcp-beam/internal/domain"
 	"go2tv.app/mcp-beam/internal/youtubecast"
@@ -335,14 +336,14 @@ func (m *Manager) BeamYouTubeVideo(ctx context.Context, req domain.YouTubeBeamRe
 
 	mediaURL := youtubecast.WatchURL(videoID)
 	sess := &session{
-		ID:         newSessionID(),
-		DeviceID:   device.ID,
-		DeviceName: device.Name,
-		MediaURL:   mediaURL,
-		Title:      videoID,
+		ID:          newSessionID(),
+		DeviceID:    device.ID,
+		DeviceName:  device.Name,
+		MediaURL:    mediaURL,
+		Title:       videoID,
 		ContentType: "youtube/video",
-		Protocol:   "chromecast",
-		castClient: &youtubeCastSessionClient{client: client},
+		Protocol:    "chromecast",
+		castClient:  &youtubeCastSessionClient{client: client},
 		Warnings: []string{
 			"Cast via YouTube receiver (videoId). Play/pause/seek may be limited compared with beam_media.",
 		},
@@ -393,21 +394,31 @@ type youtubeCastSessionClient struct {
 }
 
 func (c *youtubeCastSessionClient) Connect() error { return c.client.Connect() }
+
 func (c *youtubeCastSessionClient) Load(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
 	return fmt.Errorf("youtube session does not support Load")
 }
+
 func (c *youtubeCastSessionClient) LoadOnExisting(mediaURL, contentType, title string, startTime int, duration float64, subtitleURL string, live bool) error {
 	return fmt.Errorf("youtube session does not support LoadOnExisting")
 }
-func (c *youtubeCastSessionClient) Play() error                   { return c.client.Play() }
-func (c *youtubeCastSessionClient) Pause() error                  { return c.client.Pause() }
-func (c *youtubeCastSessionClient) Seek(seconds int) error        { return c.client.Seek(seconds) }
-func (c *youtubeCastSessionClient) Stop() error                   { return c.client.Stop() }
+
+func (c *youtubeCastSessionClient) Play() error { return c.client.Play() }
+
+func (c *youtubeCastSessionClient) Pause() error { return c.client.Pause() }
+
+func (c *youtubeCastSessionClient) Seek(seconds int) error { return c.client.Seek(seconds) }
+
+func (c *youtubeCastSessionClient) Stop() error { return c.client.Stop() }
+
 func (c *youtubeCastSessionClient) SetVolume(level float32) error { return c.client.SetVolume(level) }
-func (c *youtubeCastSessionClient) SetMuted(muted bool) error     { return c.client.SetMuted(muted) }
+
+func (c *youtubeCastSessionClient) SetMuted(muted bool) error { return c.client.SetMuted(muted) }
+
 func (c *youtubeCastSessionClient) GetStatus() (*castprotocol.CastStatus, error) {
 	return c.client.GetStatus()
 }
+
 func (c *youtubeCastSessionClient) Close(stopMedia bool) error { return c.client.Close(stopMedia) }
 
 func (m *Manager) StopBeaming(_ context.Context, req domain.StopRequest) (*domain.StopResult, error) {
@@ -1082,14 +1093,9 @@ func (m *Manager) beamDLNA(ctx context.Context, req domain.BeamRequest, device *
 		return nil, toolError("UNSUPPORTED_MEDIA", "source is empty")
 	}
 
-	isURL := false
-	if parsed, err := url.Parse(source); err == nil && parsed.Scheme != "" {
-		isURL = true
-	}
-
 	var prepared *preparedDLNA
 	var err error
-	if isURL {
+	if isHTTPOrHTTPSSource(source) {
 		prepared, err = m.prepareDLNAURLPlayback(ctx, req, device, mode)
 	} else {
 		prepared, err = m.prepareDLNAFilePlayback(ctx, req, device, mode)
@@ -1207,7 +1213,7 @@ func (m *Manager) preparePlayback(ctx context.Context, req domain.BeamRequest, d
 		return nil, toolError("UNSUPPORTED_MEDIA", "source is empty")
 	}
 
-	if parsed, err := url.Parse(source); err == nil && parsed.Scheme != "" {
+	if isHTTPOrHTTPSSource(source) {
 		return m.prepareURLPlayback(ctx, req, device, mode)
 	}
 	return m.prepareFilePlayback(req, device, mode)
@@ -1731,7 +1737,7 @@ func (m *Manager) computeTranscodingForFile(mode, mediaType, source string) (boo
 	codecInfo, err := utils.GetMediaCodecInfo(ffmpegPath, source)
 	if err != nil {
 		warnings = append(warnings, "codec probe failed; auto transcode disabled")
-		return false, warnings, ffmpegPath, nil
+		return false, warnings, ffmpegPath, nil //nolint:nilerr // soft-fail: continue without transcode
 	}
 
 	if utils.IsChromecastCompatible(codecInfo) {
@@ -1815,7 +1821,7 @@ func (m *Manager) addSubtitleSidecar(server streamServer, listenAddr, subtitlesP
 		webvttData, err := utils.ConvertSRTtoWebVTT(subtitlesPath)
 		if err != nil {
 			warnings = append(warnings, "failed to convert SRT subtitles to WebVTT")
-			return "", warnings, nil
+			return "", warnings, nil //nolint:nilerr // soft-fail: play without subtitles
 		}
 		server.AddHandler(route, nil, nil, webvttData)
 		return "http://" + listenAddr + route, warnings, nil
@@ -2286,7 +2292,7 @@ func (m *Manager) sessionDurationSeconds(ctx context.Context, sess *session) (fl
 
 		durationSeconds, err := utils.ClockTimeToSeconds(strings.TrimSpace(position[0]))
 		if err != nil || durationSeconds <= 0 {
-			return 0, nil
+			return 0, nil //nolint:nilerr // unknown duration is not a hard failure
 		}
 		return float64(durationSeconds), nil
 	default:
@@ -2717,7 +2723,7 @@ func stopDLNAPayload(payload adapters.DLNAPayload) (string, error) {
 		return "", err
 	}
 	if stopErr := payload.StopPlayback(); stopErr != nil {
-		return "", fmt.Errorf("%v; fallback stop after unsubscribe cleanup failure: %w", err, stopErr)
+		return "", fmt.Errorf("%s; fallback stop after unsubscribe cleanup failure: %w", err.Error(), stopErr)
 	}
 	return fmt.Sprintf("stop cleanup: %v", err), nil
 }
@@ -2793,20 +2799,25 @@ func mediaTitleFor(source string) string {
 	if source == "" {
 		return ""
 	}
-	if parsed, err := url.Parse(source); err == nil && parsed.Scheme != "" {
-		if base := path.Base(strings.TrimSpace(parsed.Path)); base != "" && base != "." && base != "/" {
-			return base
+	if isHTTPOrHTTPSSource(source) {
+		parsed, err := url.Parse(source)
+		if err == nil {
+			if base := path.Base(strings.TrimSpace(parsed.Path)); base != "" && base != "." && base != "/" {
+				return base
+			}
+			return strings.TrimSpace(parsed.Host)
 		}
-		return strings.TrimSpace(parsed.Host)
 	}
 	return strings.TrimSpace(filepath.Base(source))
 }
 
 func mediaExt(source string) string {
-	if parsed, err := url.Parse(source); err == nil && parsed.Path != "" {
-		ext := strings.ToLower(path.Ext(parsed.Path))
-		if isSafeExt(ext) {
-			return ext
+	if isHTTPOrHTTPSSource(source) {
+		if parsed, err := url.Parse(source); err == nil && parsed.Path != "" {
+			ext := strings.ToLower(path.Ext(parsed.Path))
+			if isSafeExt(ext) {
+				return ext
+			}
 		}
 	}
 
@@ -2815,6 +2826,25 @@ func mediaExt(source string) string {
 		return ext
 	}
 	return ""
+}
+
+// isHTTPOrHTTPSSource reports whether source is an http(s) media URL.
+// Absolute local paths are never treated as URLs — on Windows, url.Parse
+// treats drive paths like `C:\media\video.mp4` as scheme "C".
+func isHTTPOrHTTPSSource(source string) bool {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return false
+	}
+	if filepath.IsAbs(source) {
+		return false
+	}
+	parsed, err := url.Parse(source)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	return scheme == "http" || scheme == "https"
 }
 
 func isSafeExt(ext string) bool {

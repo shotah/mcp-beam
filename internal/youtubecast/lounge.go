@@ -154,13 +154,13 @@ func (s *LoungeSession) bind(ctx context.Context) error {
 func (s *LoungeSession) initializeQueue(ctx context.Context, videoID string, startSeconds int) error {
 	prefix := fmt.Sprintf("req%d", s.reqCount)
 	form := url.Values{
-		"count":                 {"1"},
-		"__sc":                  {actionSetPlaylist},
-		prefix + "_listId":      {""},
-		prefix + "_currentTime": {strconv.Itoa(startSeconds)},
+		"count":                  {"1"},
+		"__sc":                   {actionSetPlaylist},
+		prefix + "_listId":       {""},
+		prefix + "_currentTime":  {strconv.Itoa(startSeconds)},
 		prefix + "_currentIndex": {"-1"},
-		prefix + "_audioOnly":   {"false"},
-		prefix + "_videoId":     {videoID},
+		prefix + "_audioOnly":    {"false"},
+		prefix + "_videoId":      {videoID},
 	}
 	params := url.Values{
 		"SID":        {s.sid},

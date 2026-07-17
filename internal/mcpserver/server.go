@@ -18,6 +18,7 @@ import (
 )
 
 const protocolVersion = "2024-11-05"
+
 const (
 	defaultDiscoveryTimeoutMS = 5000
 	minDiscoveryTimeoutMS     = 100
@@ -98,7 +99,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.logLifecycle(slog.LevelDebug, "mcp_read_wait")
 		payload, jsonLineInput, err := readMessage(s.in)
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				s.waitForInflightTools()
 				s.logLifecycle(slog.LevelInfo, "mcp_stream_eof")
 				return nil
@@ -937,22 +938,20 @@ func toolErrorResultFromError(err error) toolCallResult {
 	var tErr *domain.ToolError
 	if errors.As(err, &tErr) && tErr != nil {
 		result := toolErrorResult(tErr.Code, tErr.Message)
-		structured := map[string]any{
-			"error": map[string]any{
-				"code":    tErr.Code,
-				"message": tErr.Message,
-			},
+		errPayload := map[string]any{
+			"code":    tErr.Code,
+			"message": tErr.Message,
 		}
 		if len(tErr.Limitations) > 0 {
-			structured["error"].(map[string]any)["limitations"] = tErr.Limitations
+			errPayload["limitations"] = tErr.Limitations
 		}
 		if len(tErr.SuggestedFixes) > 0 {
-			structured["error"].(map[string]any)["suggested_fixes"] = tErr.SuggestedFixes
+			errPayload["suggested_fixes"] = tErr.SuggestedFixes
 		}
 		if len(tErr.Details) > 0 {
-			structured["error"].(map[string]any)["details"] = tErr.Details
+			errPayload["details"] = tErr.Details
 		}
-		result.StructuredContent = structured
+		result.StructuredContent = map[string]any{"error": errPayload}
 		return result
 	}
 

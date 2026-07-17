@@ -68,9 +68,10 @@ func main() {
 	}
 
 	handleSIGINT := boolEnv("MCP_BEAM_HANDLE_SIGINT", false)
+	ignoredInterrupt := false
 	if !handleSIGINT {
 		signal.Ignore(os.Interrupt)
-		defer signal.Reset(os.Interrupt)
+		ignoredInterrupt = true
 	}
 	termSignals := lifecycle.TerminationSignals(handleSIGINT)
 	var (
@@ -82,7 +83,6 @@ func main() {
 	} else {
 		runCtx, stopSignals = signal.NotifyContext(context.Background(), termSignals...)
 	}
-	defer stopSignals()
 
 	logLevel := parseLogLevel(os.Getenv("MCP_BEAM_LOG_LEVEL"))
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
@@ -123,15 +123,23 @@ func main() {
 	}
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelShutdown()
-	if err := beamManager.Close(shutdownCtx); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	closeErr := beamManager.Close(shutdownCtx)
+	cancelShutdown()
+	stopSignals()
+	if ignoredInterrupt {
+		signal.Reset(os.Interrupt)
 	}
 
-	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+	exitCode := 0
+	if closeErr != nil {
+		fmt.Fprintln(os.Stderr, closeErr)
+		exitCode = 1
+	} else if runErr != nil && !errors.Is(runErr, context.Canceled) {
 		fmt.Fprintln(os.Stderr, runErr)
-		os.Exit(1)
+		exitCode = 1
+	}
+	if exitCode != 0 {
+		os.Exit(exitCode)
 	}
 }
 

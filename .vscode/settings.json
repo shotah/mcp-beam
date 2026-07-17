@@ -1,0 +1,105 @@
+{
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "editor.rulers": [
+    100
+  ],
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "files.eol": "\n",
+  "files.exclude": {
+    "**/bin": true,
+    "**/dist": true,
+    "**/.goreleaser": true
+  },
+  "files.watcherExclude": {
+    "**/bin/**": true,
+    "**/dist/**": true,
+    "**/coverage.out": true
+  },
+  "search.exclude": {
+    "**/bin": true,
+    "**/dist": true,
+    "**/coverage.out": true,
+    "**/go.sum": true
+  },
+  "[go]": {
+    "editor.defaultFormatter": "golang.go",
+    "editor.insertSpaces": false,
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+  "[go.mod]": {
+    "editor.defaultFormatter": "golang.go",
+    "editor.formatOnSave": true
+  },
+  "[makefile]": {
+    "editor.insertSpaces": false
+  },
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "[yaml]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "go.useLanguageServer": true,
+  "go.lintTool": "golangci-lint",
+  "go.lintOnSave": "package",
+  "go.lintFlags": [
+    "--fast"
+  ],
+  "go.formatTool": "goimports",
+  "go.testFlags": [
+    "-count=1"
+  ],
+  "go.testTimeout": "5m",
+  "gopls": {
+    "ui.semanticTokens": true,
+    "ui.diagnostic.staticcheck": true,
+    "formatting.gofumpt": false
+  },
+  "makefile.configureOnOpen": false,
+  "cSpell.language": "en",
+  "cSpell.words": [
+    "beaming",
+    "buildinfo",
+    "castprotocol",
+    "chromecast",
+    "coverprofile",
+    "dlna",
+    "ffmpeg",
+    "ffprobe",
+    "go2tv",
+    "goimports",
+    "golangci",
+    "GOPATH",
+    "goreleaser",
+    "httphandlers",
+    "ldflags",
+    "m3u8",
+    "mcpserver",
+    "mdns",
+    "nolint",
+    "reltime",
+    "soapcalls",
+    "ssdp",
+    "staticcheck",
+    "toplevel",
+    "transcode",
+    "upnp",
+    "webvtt",
+    "youtubecast"
+  ]
+}

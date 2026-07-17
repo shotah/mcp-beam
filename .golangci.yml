@@ -1,13 +1,66 @@
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
   enable:
-    - govet
-    - staticcheck
+    - copyloopvar
+    - durationcheck
     - errcheck
+    - errorlint
+    - forcetypeassert
+    - gocritic
+    - govet
     - ineffassign
+    - misspell
+    - nilerr
+    - revive
+    - staticcheck
+    - unconvert
     - unused
+    - usestdlibvars
+  settings:
+    gocritic:
+      disabled-checks:
+        - hugeParam
+      enabled-tags:
+        - diagnostic
+        - performance
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: var-declaration
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - errorlint
+          - forcetypeassert
+          - gocritic
+          - revive
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 
-issues:
-  exclude-use-default: false
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

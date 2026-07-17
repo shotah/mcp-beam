@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GoReleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # After you change the module path to your fork (e.g. github.com/you/mcp-beam),
+      # uncomment to warm proxy.golang.org for `go install` / `go run`.
+      # - name: Index module on proxy.golang.org
+      #   run: |
+      #     curl -fsSL "https://proxy.golang.org/github.com/${{ github.repository }}/@v/${GITHUB_REF_NAME}.info" || true

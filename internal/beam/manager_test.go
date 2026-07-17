@@ -16,6 +16,7 @@ import (
 	"go2tv.app/go2tv/v2/httphandlers"
 	"go2tv.app/go2tv/v2/soapcalls"
 	"go2tv.app/go2tv/v2/utils"
+
 	"go2tv.app/mcp-beam/internal/adapters"
 	"go2tv.app/mcp-beam/internal/domain"
 )
@@ -3233,7 +3234,7 @@ func (f *fakeYouTubeFactory) NewYouTubeClient(deviceAddr string) (adapters.YouTu
 }
 
 type fakeYouTubeClient struct {
-	deviceAddr    string
+	deviceAddr   string
 	connectErr   error
 	playErr      error
 	videoID      string
@@ -3256,15 +3257,22 @@ func (f *fakeYouTubeClient) PlayVideo(ctx context.Context, videoID string, start
 	return f.playErr
 }
 
-func (f *fakeYouTubeClient) Play() error                   { return nil }
-func (f *fakeYouTubeClient) Pause() error                  { return nil }
-func (f *fakeYouTubeClient) Seek(seconds int) error        { return nil }
-func (f *fakeYouTubeClient) Stop() error                   { f.stopCalls++; return nil }
+func (f *fakeYouTubeClient) Play() error { return nil }
+
+func (f *fakeYouTubeClient) Pause() error { return nil }
+
+func (f *fakeYouTubeClient) Seek(seconds int) error { return nil }
+
+func (f *fakeYouTubeClient) Stop() error { f.stopCalls++; return nil }
+
 func (f *fakeYouTubeClient) SetVolume(level float32) error { return nil }
-func (f *fakeYouTubeClient) SetMuted(muted bool) error     { return nil }
+
+func (f *fakeYouTubeClient) SetMuted(muted bool) error { return nil }
+
 func (f *fakeYouTubeClient) GetStatus() (*castprotocol.CastStatus, error) {
 	return &castprotocol.CastStatus{PlayerState: "PLAYING"}, nil
 }
+
 func (f *fakeYouTubeClient) Close(stopMedia bool) error { f.closeCalls++; return nil }
 
 func TestBeamYouTubeVideo(t *testing.T) {
@@ -3331,6 +3339,40 @@ func TestBeamYouTubeVideoRejectsInvalidVideoID(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid video id error")
+	}
+}
+
+func TestIsHTTPOrHTTPSSourceRejectsWindowsDrivePaths(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		source string
+		want   bool
+	}{
+		{source: "https://example.com/video.mp4", want: true},
+		{source: "http://192.168.1.10/media.mkv", want: true},
+		{source: `C:\Users\chris\Videos\sample.mp4`, want: false},
+		{source: `c:\temp\movie.mkv`, want: false},
+		{source: filepath.Join(t.TempDir(), "local.mp4"), want: false},
+		{source: "ftp://example.com/a.mp4", want: false},
+		{source: "", want: false},
+	}
+	for _, tc := range cases {
+		if got := isHTTPOrHTTPSSource(tc.source); got != tc.want {
+			t.Fatalf("isHTTPOrHTTPSSource(%q)=%v, want %v", tc.source, got, tc.want)
+		}
+	}
+}
+
+func TestMediaTitleForWindowsDrivePath(t *testing.T) {
+	t.Parallel()
+
+	got := mediaTitleFor(`C:\Users\chris\Videos\sample.mp4`)
+	if got != "sample.mp4" {
+		t.Fatalf("mediaTitleFor windows path = %q, want sample.mp4", got)
+	}
+	if got := mediaExt(`C:\Users\chris\Videos\sample.mp4`); got != ".mp4" {
+		t.Fatalf("mediaExt windows path = %q, want .mp4", got)
 	}
 }
 

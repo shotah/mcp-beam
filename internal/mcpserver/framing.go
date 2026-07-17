@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -13,7 +14,7 @@ import (
 func readMessage(r *bufio.Reader) ([]byte, bool, error) {
 	firstLine, err := r.ReadString('\n')
 	if err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			if firstLine == "" {
 				return nil, false, io.EOF
 			}
@@ -34,7 +35,7 @@ func readMessage(r *bufio.Reader) ([]byte, bool, error) {
 		if line == "\r\n" {
 			if !sawHeader {
 				if line, err = r.ReadString('\n'); err != nil {
-					if err == io.EOF && !sawHeader {
+					if errors.Is(err, io.EOF) && !sawHeader {
 						return nil, false, io.EOF
 					}
 					return nil, false, err
@@ -65,7 +66,7 @@ func readMessage(r *bufio.Reader) ([]byte, bool, error) {
 
 		line, err = r.ReadString('\n')
 		if err != nil {
-			if err == io.EOF && !sawHeader {
+			if errors.Is(err, io.EOF) && !sawHeader {
 				return nil, false, io.EOF
 			}
 			return nil, false, err
@@ -101,7 +102,7 @@ func tryReadJSONLineMessage(r *bufio.Reader, firstLine string) ([]byte, bool, er
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				if line != "" {
 					buf.WriteString(line)
 				}
