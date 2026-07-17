@@ -298,6 +298,122 @@ func (m *Manager) PauseBeaming(ctx context.Context, req domain.PlaybackControlRe
 	return m.controlPlayback(ctx, req, "pause")
 }
 
+func (m *Manager) SetVolumeBeaming(ctx context.Context, req domain.VolumeRequest) (*domain.VolumeResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.isClosed() {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	if req.SessionID == "" && req.TargetDevice == "" {
+		return nil, toolError("INTERNAL_ERROR", "either session_id or target_device is required")
+	}
+	if req.Volume < 0 || req.Volume > 100 {
+		return nil, toolError("INVALID_PARAMS", "volume must be in range [0, 100]")
+	}
+
+	sess := m.findSessionByTarget(req.SessionID, req.TargetDevice)
+	if sess == nil {
+		return nil, toolError("DEVICE_NOT_FOUND", "no active session matches the provided target")
+	}
+
+	if err := m.setSessionVolume(ctx, sess, req.Volume); err != nil {
+		return nil, err
+	}
+
+	return &domain.VolumeResult{
+		OK:        true,
+		SessionID: sess.ID,
+		DeviceID:  sess.DeviceID,
+		Volume:    req.Volume,
+	}, nil
+}
+
+func (m *Manager) MuteBeaming(ctx context.Context, req domain.MuteRequest) (*domain.MuteResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.isClosed() {
+		return nil, toolError("INTERNAL_ERROR", "beam manager is shutting down")
+	}
+	if req.SessionID == "" && req.TargetDevice == "" {
+		return nil, toolError("INTERNAL_ERROR", "either session_id or target_device is required")
+	}
+
+	sess := m.findSessionByTarget(req.SessionID, req.TargetDevice)
+	if sess == nil {
+		return nil, toolError("DEVICE_NOT_FOUND", "no active session matches the provided target")
+	}
+
+	if err := m.setSessionMuted(ctx, sess, req.Muted); err != nil {
+		return nil, err
+	}
+
+	return &domain.MuteResult{
+		OK:        true,
+		SessionID: sess.ID,
+		DeviceID:  sess.DeviceID,
+		Muted:     req.Muted,
+	}, nil
+}
+
+func (m *Manager) setSessionVolume(ctx context.Context, sess *session, volumePercent int) error {
+	switch sess.Protocol {
+	case "chromecast":
+		if sess.castClient == nil {
+			return toolError("INTERNAL_ERROR", "chromecast session is not configured")
+		}
+		level := volumeLevelFromPercent(volumePercent)
+		if err := m.withRetry(ctx, func() error {
+			return sess.castClient.SetVolume(level)
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to set Chromecast volume: %v", err))
+		}
+	case "dlna":
+		if sess.dlnaPayload == nil {
+			return toolError("INTERNAL_ERROR", "dlna session is not configured")
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.dlnaPayload.SetVolumeSoapCall(strconv.Itoa(volumePercent))
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to set DLNA volume: %v", err))
+		}
+	default:
+		return unsupportedProtocolError(sess.Protocol)
+	}
+	return nil
+}
+
+func (m *Manager) setSessionMuted(ctx context.Context, sess *session, muted bool) error {
+	switch sess.Protocol {
+	case "chromecast":
+		if sess.castClient == nil {
+			return toolError("INTERNAL_ERROR", "chromecast session is not configured")
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.castClient.SetMuted(muted)
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to set Chromecast mute: %v", err))
+		}
+	case "dlna":
+		if sess.dlnaPayload == nil {
+			return toolError("INTERNAL_ERROR", "dlna session is not configured")
+		}
+		muteValue := "0"
+		if muted {
+			muteValue = "1"
+		}
+		if err := m.withRetry(ctx, func() error {
+			return sess.dlnaPayload.SetMuteSoapCall(muteValue)
+		}); err != nil {
+			return toolError("PROTOCOL_ERROR", fmt.Sprintf("failed to set DLNA mute: %v", err))
+		}
+	default:
+		return unsupportedProtocolError(sess.Protocol)
+	}
+	return nil
+}
+
 func (m *Manager) controlPlayback(ctx context.Context, req domain.PlaybackControlRequest, action string) (*domain.PlaybackControlResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -582,6 +698,8 @@ func (m *Manager) GetBeamingStatus(ctx context.Context, req domain.StatusRequest
 			applyDLNAPositionInfo(result, positionInfo)
 		}
 
+		m.applyDLNAVolumeMute(ctx, sess, result)
+
 		positionText := ""
 		if len(positionInfo) >= 2 {
 			positionText = strings.TrimSpace(positionInfo[1])
@@ -592,6 +710,34 @@ func (m *Manager) GetBeamingStatus(ctx context.Context, req domain.StatusRequest
 	}
 
 	return result, nil
+}
+
+func (m *Manager) applyDLNAVolumeMute(ctx context.Context, sess *session, result *domain.StatusResult) {
+	if sess == nil || sess.dlnaPayload == nil || result == nil {
+		return
+	}
+
+	var volume int
+	volumeErr := m.withRetry(ctx, func() error {
+		var err error
+		volume, err = sess.dlnaPayload.GetVolumeSoapCall()
+		return err
+	})
+	if volumeErr == nil {
+		result.Volume = intPtr(clampVolumePercent(volume))
+	}
+
+	var muteRaw string
+	muteErr := m.withRetry(ctx, func() error {
+		var err error
+		muteRaw, err = sess.dlnaPayload.GetMuteSoapCall()
+		return err
+	})
+	if muteErr == nil {
+		if muted, ok := parseDLNAMute(muteRaw); ok {
+			result.Muted = boolPtr(muted)
+		}
+	}
 }
 
 func (m *Manager) seekChromecastTranscoded(ctx context.Context, sess *session, resolvedSeconds int) error {
@@ -1785,12 +1931,58 @@ func applyCastStatus(result *domain.StatusResult, status *castprotocol.CastStatu
 		result.DurationSeconds = float64Ptr(duration)
 	}
 
+	result.Volume = intPtr(volumePercentFromLevel(status.Volume))
+	result.Muted = boolPtr(status.Muted)
+
 	if title := strings.TrimSpace(status.MediaTitle); title != "" {
 		result.Title = title
 	}
 	if contentType := strings.TrimSpace(status.ContentType); contentType != "" {
 		result.ContentType = contentType
 	}
+}
+
+func volumeLevelFromPercent(percent int) float32 {
+	return float32(clampVolumePercent(percent)) / 100
+}
+
+func volumePercentFromLevel(level float32) int {
+	if level < 0 {
+		level = 0
+	}
+	if level > 1 {
+		level = 1
+	}
+	return int(math.Round(float64(level) * 100))
+}
+
+func clampVolumePercent(volume int) int {
+	if volume < 0 {
+		return 0
+	}
+	if volume > 100 {
+		return 100
+	}
+	return volume
+}
+
+func parseDLNAMute(raw string) (bool, bool) {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "1", "true", "yes":
+		return true, true
+	case "0", "false", "no":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func applyDLNAPositionInfo(result *domain.StatusResult, positionInfo []string) {

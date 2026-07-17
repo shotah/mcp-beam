@@ -77,6 +77,14 @@ func (c *CastClientAdapter) Stop() error {
 	return c.client.Stop()
 }
 
+func (c *CastClientAdapter) SetVolume(level float32) error {
+	return c.client.SetVolume(level)
+}
+
+func (c *CastClientAdapter) SetMuted(muted bool) error {
+	return c.client.SetMuted(muted)
+}
+
 func (c *CastClientAdapter) GetStatus() (*castprotocol.CastStatus, error) {
 	return c.client.GetStatus()
 }
@@ -118,6 +126,22 @@ func (d *DLNAPayloadAdapter) GetTransportInfo() ([]string, error) {
 
 func (d *DLNAPayloadAdapter) GetPositionInfo() ([]string, error) {
 	return d.payload.GetPositionInfo()
+}
+
+func (d *DLNAPayloadAdapter) GetVolumeSoapCall() (int, error) {
+	return d.payload.GetVolumeSoapCall()
+}
+
+func (d *DLNAPayloadAdapter) SetVolumeSoapCall(v string) error {
+	return d.payload.SetVolumeSoapCall(v)
+}
+
+func (d *DLNAPayloadAdapter) GetMuteSoapCall() (string, error) {
+	return d.payload.GetMuteSoapCall()
+}
+
+func (d *DLNAPayloadAdapter) SetMuteSoapCall(number string) error {
+	return d.payload.SetMuteSoapCall(number)
 }
 
 func (d *DLNAPayloadAdapter) ListenAddress() string {

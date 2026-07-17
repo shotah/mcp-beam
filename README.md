@@ -11,12 +11,14 @@
 
 `mcp-beam` is a MCP server (`stdio` transport) for casting local files and media URLs to Chromecast and DLNA/UPnP devices on your LAN.
 
-It exposes seven tools:
+It exposes these tools:
 - `list_local_hardware`
 - `beam_media`
 - `get_beaming_status`
 - `play_beaming`
 - `pause_beaming`
+- `set_beaming_volume`
+- `mute_beaming`
 - `seek_beaming`
 - `stop_beaming`
 
@@ -94,7 +96,7 @@ go run go2tv.app/mcp-beam@latest --self-test
 
 1. Call `list_local_hardware` and pick a device `id`.
 2. Call `beam_media` with `source` and `target_device`.
-3. Call `get_beaming_status`, `play_beaming`, `pause_beaming`, or `seek_beaming` as needed.
+3. Call `get_beaming_status`, `play_beaming`, `pause_beaming`, `set_beaming_volume`, `mute_beaming`, or `seek_beaming` as needed.
 4. Call `stop_beaming` when done.
 
 Minimal example flow:
@@ -143,6 +145,26 @@ Minimal example flow:
   "name": "play_beaming",
   "arguments": {
     "session_id": "sess_abcd1234"
+  }
+}
+```
+
+```json
+{
+  "name": "set_beaming_volume",
+  "arguments": {
+    "session_id": "sess_abcd1234",
+    "volume": 35
+  }
+}
+```
+
+```json
+{
+  "name": "mute_beaming",
+  "arguments": {
+    "session_id": "sess_abcd1234",
+    "muted": true
   }
 }
 ```
@@ -426,6 +448,8 @@ On success, `structuredContent` includes:
 - `state`
 - optional `position_seconds`
 - optional `duration_seconds`
+- optional `volume` (`0`-`100`)
+- optional `muted`
 - optional `title`
 - optional `content_type`
 - `media_url`
@@ -483,6 +507,62 @@ On success, `structuredContent` includes:
 - `session_id`
 - `device_id`
 - `state` (`paused`)
+
+### `set_beaming_volume`
+
+Set absolute volume for an active beam session.
+
+Arguments:
+- `target_device` (optional string)
+- `session_id` (optional string)
+- `volume` (required integer, `0`-`100`)
+- At least one of `target_device` or `session_id` is required.
+
+Example:
+
+```json
+{
+  "name": "set_beaming_volume",
+  "arguments": {
+    "session_id": "sess_abcd1234",
+    "volume": 35
+  }
+}
+```
+
+On success, `structuredContent` includes:
+- `ok`
+- `session_id`
+- `device_id`
+- `volume`
+
+### `mute_beaming`
+
+Mute or unmute an active beam session.
+
+Arguments:
+- `target_device` (optional string)
+- `session_id` (optional string)
+- `muted` (required boolean)
+- At least one of `target_device` or `session_id` is required.
+
+Example:
+
+```json
+{
+  "name": "mute_beaming",
+  "arguments": {
+    "session_id": "sess_abcd1234",
+    "muted": true
+  }
+}
+```
+
+On success, `structuredContent` includes:
+- `ok`
+- `session_id`
+- `device_id`
+- `muted`
 
 ### `stop_beaming`
 
@@ -606,6 +686,7 @@ Common tool error codes:
 - `SEEK_MODE_INVALID`
 - `SEEK_POSITION_INVALID`
 - `SEEK_DURATION_UNKNOWN`
+- `INVALID_PARAMS`
 - `PROTOCOL_ERROR`
 - `INTERNAL_ERROR`
 
@@ -672,8 +753,9 @@ Core flow:
 2. `beam_media`: validate source, resolve target, choose protocol, decide transcode, start playback, persist session.
 3. `get_beaming_status`: query active sessions by `session_id` or `target_device`.
 4. `play_beaming` / `pause_beaming`: resume or pause active sessions by `session_id` or `target_device`.
-5. `seek_beaming`: seek active sessions by `session_id` or `target_device`.
-6. `stop_beaming`: resolve session/device, stop protocol playback, tear down runtime resources.
+5. `set_beaming_volume` / `mute_beaming`: set volume (0-100) or mute state for active sessions.
+6. `seek_beaming`: seek active sessions by `session_id` or `target_device`.
+7. `stop_beaming`: resolve session/device, stop protocol playback, tear down runtime resources.
 
 Session lifecycle defaults:
 - `idle_cleanup_after = 10m`

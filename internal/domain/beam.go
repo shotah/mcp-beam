@@ -41,6 +41,32 @@ type PlaybackControlResult struct {
 	State     string `json:"state"`
 }
 
+type VolumeRequest struct {
+	TargetDevice string `json:"target_device,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	Volume       int    `json:"volume"`
+}
+
+type VolumeResult struct {
+	OK        bool   `json:"ok"`
+	SessionID string `json:"session_id"`
+	DeviceID  string `json:"device_id"`
+	Volume    int    `json:"volume"`
+}
+
+type MuteRequest struct {
+	TargetDevice string `json:"target_device,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	Muted        bool   `json:"muted"`
+}
+
+type MuteResult struct {
+	OK        bool   `json:"ok"`
+	SessionID string `json:"session_id"`
+	DeviceID  string `json:"device_id"`
+	Muted     bool   `json:"muted"`
+}
+
 type SeekRequest struct {
 	TargetDevice    string   `json:"target_device,omitempty"`
 	SessionID       string   `json:"session_id,omitempty"`
@@ -74,6 +100,8 @@ type StatusResult struct {
 	State           string   `json:"state"`
 	PositionSeconds *float64 `json:"position_seconds,omitempty"`
 	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
+	Volume          *int     `json:"volume,omitempty"`
+	Muted           *bool    `json:"muted,omitempty"`
 	Title           string   `json:"title,omitempty"`
 	ContentType     string   `json:"content_type,omitempty"`
 	MediaURL        string   `json:"media_url,omitempty"`

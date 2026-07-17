@@ -23,6 +23,8 @@ type CastClient interface {
 	Pause() error
 	Seek(seconds int) error
 	Stop() error
+	SetVolume(level float32) error
+	SetMuted(muted bool) error
 	GetStatus() (*castprotocol.CastStatus, error)
 	Close(stopMedia bool) error
 }
@@ -39,6 +41,10 @@ type DLNAPayload interface {
 	SeekSoapCall(reltime string) error
 	GetTransportInfo() ([]string, error)
 	GetPositionInfo() ([]string, error)
+	GetVolumeSoapCall() (int, error)
+	SetVolumeSoapCall(v string) error
+	GetMuteSoapCall() (string, error)
+	SetMuteSoapCall(number string) error
 	ListenAddress() string
 	SetContext(ctx context.Context)
 	MediaURL() string
